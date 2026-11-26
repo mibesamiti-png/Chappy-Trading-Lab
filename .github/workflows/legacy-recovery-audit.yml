@@ -26,7 +26,7 @@ jobs:
           root = Path('legacy/integrated_recovery')
           rows = re.findall(r'^\| R(\d+) \| ([^|]+) \| ([a-f0-9]{64}) \|', Path('docs/INTEGRATED_RECOVERY.md').read_text(), re.M)
           pins = {n.strip(): h for _, n, h in rows}
-          assert len(pins) == len(rows) == 46, 'inventory count or duplicate'
+          assert len(pins) == len(rows) == 50, 'inventory count or duplicate'
           assert set(pins) == {p.name for p in root.glob('*.py')}, 'inventory mismatch'
           other = {
               'Chappy_Market_Data_Collector_v0.1.py': '184f3674d28f15cbc9c2c289bf844bc12907eefcafb37f0fb284ae110129a67f',
@@ -50,6 +50,9 @@ jobs:
               if p.name in ('Chappy_Trading_OHLCV_Refresh_Study_v0.1.py', 'Chappy_Trading_Variable_Payoff_Core_Study_v0.1.py'):
                   deps = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'DEPS' for t in n.targets))
                   refs.update('Chappy_Trading_'+k+'_v0.1.py' for k in deps)
+              if p.name == 'Chappy_Trading_Integration_Audit_v0.1.py':
+                  audit_pins = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'PINS' for t in n.targets))
+                  refs.update('Chappy_Trading_'+v[0]+'_v0.1.py' for v in audit_pins.values())
               for name in sorted(refs):
                   if name == p.name:
                       continue
