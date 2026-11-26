@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "revision": 1,
+  "holdout": {
+    "year": 2026,
+    "status": "locked",
+    "unlock_requires": "owner approval after frozen protocol"
+  },
+  "tasks": [
+    {
+      "id": "CTL-001",
+      "priority": 1,
+      "status": "ready",
+      "title": "Verify Work/Chat handoff and cross-run persistence",
+      "acceptance": "read current repo state and confirm local inputs and artifacts survive a fresh run; report only non-sensitive status"
+    },
+    {
+      "id": "CTL-002",
+      "priority": 2,
+      "status": "ready",
+      "title": "Audit prior statistical research and data limitations",
+      "acceptance": "document baseline metric, sampling, missingness, Clean lookahead, multiple testing, leakage risks and identification limits locally; report safe status"
+    },
+    {
+      "id": "CTL-003",
+      "priority": 3,
+      "status": "blocked",
+      "depends_on": [
+        "CTL-002"
+      ],
+      "title": "Pre-register bounded development-period investigations",
+      "acceptance": "freeze hypotheses, time granularity, measures, effect size and stopping criteria without 2026 holdout"
+    },
+    {
+      "id": "CTL-004",
+      "priority": 4,
+      "status": "blocked",
+      "depends_on": [
+        "CTL-003"
+      ],
+      "title": "Execute bounded academic investigations",
+      "acceptance": "reproducible results with uncertainty and negative findings; retain detailed results locally"
+    },
+    {
+      "id": "CTL-005",
+      "priority": 5,
+      "status": "blocked",
+      "depends_on": [
+        "CTL-004"
+      ],
+      "title": "Decide whether simple academic models warrant study",
+      "acceptance": "explicit evidence-based go/no-go; no automatic escalation"
+    },
+    {
+      "id": "CTL-006",
+      "priority": 6,
+      "status": "approval_required",
+      "depends_on": [
+        "CTL-005"
+      ],
+      "title": "Freeze final protocol and request holdout approval",
+      "acceptance": "owner approval; do not access 2026 before approval"
+    }
+  ]
+}
