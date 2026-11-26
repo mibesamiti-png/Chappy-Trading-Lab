@@ -104,7 +104,8 @@ jobs:
           root = Path(sys.argv[1])
           plan = json.loads((root/'plan.json').read_text())
           assert plan['round'] == 169
-          assert plan['candidate_count'] == 273
+          # R162: 3 panels x 3 horizons x (273 tables - WAIT) + one WAIT.
+          assert plan['candidate_count'] == 1 + 3 * 3 * (273 - 1), plan['candidate_count']
           expected = set(product([20,40], ['FROZEN','STOP','REFRESH']))
           for demo in ('stable','reversal','missing'):
               report = json.loads((root/(demo+'.json')).read_text())
