@@ -84,3 +84,20 @@ R163 and R164 match the historical R167 pins. R154 and R167 are complete recover
 | R109 | Chappy_Trading_Paired_Variance_Study_v0.1.py | 5d29733e2505cc2cc1990e748f8ff775d952a5de9f8b827ab65b29cb77d346b4 |
 
 All twelve original source texts match their historical code SHA-256 in the Notion notebook or a pinned historical dependency. Source-only intake; synthetic study execution has not been repeated. Static CI checks the same-directory dependencies and archived bytes. No real market data or result reports imported.
+
+## Notion-pinned historical study batch R110–121
+
+| R110 | Chappy_Trading_Comparison_Drift_Study_v0.1.py | 47a4909f951cb30b32a7da20f7d99208211fd68c59a55a4bd4cd2e658d9228e0 |
+| R111 | Chappy_Trading_Post_Switch_Study_v0.1.py | 154b2e211fd4ab6d26a6f8e5d18d30965b15187f3df40935ef646d2540bf8d0d |
+| R112 | Chappy_Trading_Dual_Monitor_Study_v0.1.py | 9c3537714c77c5953314592cb441c6f93a920ab383b5aeb4aed17dd86d358a7f |
+| R113 | Chappy_Trading_Recovery_Requalification_Study_v0.1.py | cb5390fef100ed9e77d1879766308e0bff4d8b03ca591b6a827b21b0bb8e8c39 |
+| R114 | Chappy_Trading_Lifecycle_Audit_Study_v0.1.py | 62b7e8475d70e76eb04201a4cdbb6a192a718f3a63dc6753a3e4e05675cf19ca |
+| R115 | Chappy_Trading_Lifecycle_Priority_Study_v0.1.py | 4366b6760745a4164bc9ecc0e4fbf744b6e0222d2a5844b653a1dea420ed6a1c |
+| R116 | Chappy_Trading_Monitor_Evidence_Study_v0.1.py | 5ef476cd9edc9c9944f7dc0f785cd954657a79c1d731b73da72d8aacc6dbfac1 |
+| R117 | Chappy_Trading_Qualification_Generation_Study_v0.1.py | 5f417e5ec3d7e523e3c1180d5828ff78b2ca44404c0e7496fd36d60c10203350 |
+| R118 | Chappy_Trading_Parallel_Requalification_Study_v0.1.py | 632d55bfc5e2db136173ee0f085c631860d33ad68967b7a945195a5fd6aa3d52 |
+| R119 | Chappy_Trading_Requalification_Budget_Study_v0.1.py | 556f066754b1ced78d195d550d1846f6eed92d15f60f53b537e8ae05434f5422 |
+| R120 | Chappy_Trading_Admission_Evidence_Ledger_Study_v0.1.py | 798ee9a2ebf9199064d9fb8d502396aea3798fe0f837a119a457243997953d63 |
+| R121 | Chappy_Trading_Admission_Allocation_Study_v0.1.py | af6ee2c9beb5b76b3c8d0c7cc933181f5dccc54dd061b9dd07ce90e67432d2dc |
+
+All twelve source texts match the historical Notion code SHA-256; literal source dependencies present. Source-only recovery, not fresh runtime verification. No market data or historical result reports imported.
