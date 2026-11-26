@@ -1,5 +1,5 @@
 # Integrated legacy source recovery
-2026-11-27 JST. 39 standalone historical sources recovered from Library and placed together under legacy/integrated_recovery. These are exact hash-pinned historical sources, not a verified extraction of R170. Readback from GitHub matched each recovered text.
+2026-11-27 JST. 43 standalone historical sources recovered from Library and placed together under legacy/integrated_recovery. These are exact hash-pinned historical sources, not a verified extraction of R170. Readback from GitHub matched each recovered text.
 
 | Round | Source | SHA-256 verified against historical record or parent pin |
 |---|---|---|
@@ -43,7 +43,11 @@
 | R75 | Chappy_Trading_Estimation_Comparison_v0.1.py | fda9901b247bfc5cb0cb0935458a8ec722cf39a40c5e5a0b75a974a07bd7e1e7 |
 | R93 | Chappy_Trading_Hypothesis_Generation_Study_v0.1.py | d3e35c8b08a87d2c3e5baefd22a647f88aa1c24504fbd2b9263dd3d533defdb8 |
 | R92 | Chappy_Trading_Candidate_Limit_Study_v0.1.py | e90760f0539e336e87e843d0325f6a83fd337513857fd53f2bc0131e58de06d5 |
+| R91 | Chappy_Trading_Candidate_Selection_Study_v0.1.py | bdaef292a21e8a5114883895b7b77000f8994f4fae83656ef4d29fd426e6e66f |
+| R90 | Chappy_Trading_Feature_Interaction_Study_v0.1.py | 80f993c78544601a8b854acc0c6c1e70bf0e465a5e8a48ab02de53edb434cdc5 |
+| R86 | Chappy_Trading_Statistical_Gate_Study_v0.1.py | 27df717768cc5ada8d11f7d53ede615c24399eb125c68d2b29e2883503ee6b8b |
+| R89 | Chappy_Trading_Conditional_Edge_Study_v0.1.py | ffe40de972effd252c9e0fa27894551d9585f74850dfd7209f7db03fed560daf |
 
 R78 was recovered from a Library duplicate with suffix (2), not the unrelated earlier known-data program with the same basename. Original runtime basename restored only after exact pinned-byte validation. Preserve the other version separately if recovered later.
 
-Remaining direct source parents / review frontier: Chappy_Trading_Candidate_Selection_Study_v0.1.py (bdaef292a21e8a5114883895b7b77000f8994f4fae83656ef4d29fd426e6e66f; dependency shape or scope needs manual review). R158 diagnostic reads a prior result file, which stays local pending rights review; do not invent a replacement. Resolve recursive parents without relaxing pins. No execution or full dependency closure verified. R170, Offline Lab and Splitter archive inspection remains pending. Do not claim R170 package SHA or archive CRC verified. No data archives committed. Historical source only; not authorized for live use or use with restricted HF data. See research charter.
+Remaining direct source parents: R86 -> R85 Random Market (Chappy_Trading_Random_Market_Study_v0.1.py, f51883f82afac45140b2cf1b6ffbbe4ec8f77a1ecf935e19eb8c749f04e7f63f). R89 -> R71 already recovered. This batch stopped at the connector tool-call limit; four committed and verified files were reconciled into the ledger. R158 diagnostic reads a prior result file, which stays local pending rights review; do not invent a replacement. Resolve recursive parents without relaxing pins. No execution or full dependency closure verified. R170, Offline Lab and Splitter archive inspection remains pending. Do not claim R170 package SHA or archive CRC verified. No data archives committed. Historical source only; not authorized for live use or use with restricted HF data. See research charter.
