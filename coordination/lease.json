@@ -1,16 +1,12 @@
 {
   "schema_version": 1,
-  "status": "active",
-  "owner": "ctl-20261127-pr1",
-  "claim_pr": 1,
-  "task_ids": [
-    "CTL-001",
-    "CTL-002",
-    "CTL-003",
-    "CTL-004",
-    "CTL-005"
-  ],
-  "started_utc": "2026-11-26T17:22:36Z",
-  "expires_utc": "2026-11-26T18:02:36Z",
-  "takeover": "no automatic expiry takeover; confirm prior writer stopped"
+  "status": "idle",
+  "owner": null,
+  "task_ids": [],
+  "expires_utc": null,
+  "last_owner": "ctl-20261127-pr1",
+  "last_claim_pr": 1,
+  "last_result_commit": "fb2070524cddc7105bf9fdca84c3d31870fd7389",
+  "released_utc": "2026-11-26T17:44:22Z",
+  "last_run_status": "checkpointed; authorized ready research tasks exhausted; CTL-001 actual scheduled-agent/dependency test pending; CTL-006 owner-controlled; no schedule enabled"
 }
