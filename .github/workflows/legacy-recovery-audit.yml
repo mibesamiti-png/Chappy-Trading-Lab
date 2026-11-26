@@ -29,7 +29,7 @@ jobs:
           root = Path('legacy/integrated_recovery')
           rows = re.findall(r'^\| R(\d+) \| ([^|]+) \| ([a-f0-9]{64}) \|', Path('docs/INTEGRATED_RECOVERY.md').read_text(), re.M)
           pins = {n.strip(): h for _, n, h in rows}
-          assert len(pins) == len(rows) == 93, 'inventory count or duplicate'
+          assert len(pins) == len(rows) == 100, 'inventory count or duplicate'
           assert set(pins) == {p.name for p in root.glob('*.py')}, 'inventory mismatch'
           other = {
               'Chappy_Market_Data_Collector_v0.1.py': '184f3674d28f15cbc9c2c289bf844bc12907eefcafb37f0fb284ae110129a67f',
@@ -40,8 +40,12 @@ jobs:
           assert set(other) == {p.name for p in other_files}
           paths = list(root.glob('*.py')) + other_files
           edges = set()
-          # R172 uses a historical filename import without an embedded digest.
-          unpinned_expected = {('Chappy_Market_Data_Provider_v0.1.py', 'Chappy_Market_Data_Collector_v0.1.py')}
+          # Historical filename-only imports: source bytes still verified independently.
+          unpinned_expected = {
+              ('Chappy_Market_Data_Provider_v0.1.py', 'Chappy_Market_Data_Collector_v0.1.py'),
+              ('Chappy_Trading_Core_Comparison_v0.1.py', 'Chappy_Trading_Refresh_Trigger_Study_v0.1.py'),
+              ('Chappy_Trading_Capital_Comparison_v0.1.py', 'Chappy_Trading_Core_Comparison_v0.1.py'),
+          }
           unpinned_seen = set()
           for p in sorted(paths):
               raw = p.read_bytes()
@@ -56,6 +60,10 @@ jobs:
               if p.name == 'Chappy_Trading_Integration_Audit_v0.1.py':
                   audit_pins = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'PINS' for t in n.targets))
                   refs.update('Chappy_Trading_'+v[0]+'_v0.1.py' for v in audit_pins.values())
+              if p.name in ('Chappy_Trading_Admission_Ledger_Integration_Study_v0.1.py', 'Chappy_Trading_Eligible_Evidence_Study_v0.1.py', 'Chappy_Trading_External_Audit_Ledger_Study_v0.1.py'):
+                  parents = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'PARENTS' for t in n.targets))
+                  prefix = 'Chappy_Trading_' if p.name == 'Chappy_Trading_External_Audit_Ledger_Study_v0.1.py' else 'Chappy_Trading_Admission_'
+                  refs.update(prefix+k+'_Study_v0.1.py' for k in parents)
               for name in sorted(refs):
                   if name == p.name:
                       continue
