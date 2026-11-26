@@ -1,5 +1,5 @@
 # Integrated legacy source recovery
-2026-11-27 JST. Twenty-six standalone historical sources recovered from Library and placed together under legacy/integrated_recovery. These are exact hash-pinned historical sources, not a verified extraction of R170. Readback from GitHub matched each recovered text.
+2026-11-27 JST. Thirty-one standalone historical sources recovered from Library and placed together under legacy/integrated_recovery. These are exact hash-pinned historical sources, not a verified extraction of R170. Readback from GitHub matched each recovered text.
 
 | Round | Source | SHA-256 verified against historical record or parent pin |
 |---|---|---|
@@ -30,5 +30,12 @@
 | R73 | Chappy_Trading_Economic_Value_Study_v0.1.py | 8ad5370ca7d1341f5df9bc845b2a97a64bb03526952bb3fe0800a73c3666b85e |
 | R79 | Chappy_Trading_Observation_Coverage_Study_v0.1.py | 7b99b2893770cabee0d84b02c6a9d0f700fce72587554ca41e33e2f141f872db |
 | R98 | Chappy_Trading_Observation_Imbalance_Study_v0.1.py | 426709b3d3ded3dfb7c760883abbede4f44e0bf18b54094ea0b0de3ef0575a61 |
+| R72 | Chappy_Trading_Regime_Selection_Study_v0.1.py | f1678ab42c11426ed78478e4de5231836c09918f2d96998985948adec1d2f429 |
+| R78 | Chappy_Trading_Opportunity_Study_v0.1.py | f4628d5b6b93c12199bbade62f5423ee6421373ecfc1c52ab9e649b783dd8f9c |
+| R97 | Chappy_Trading_Hypothesis_Pool_Study_v0.1.py | be460ac944cbf4168c6fd86cfb03be1f36e0f1a40af60a8c04630b3b312bcb60 |
+| R71 | Chappy_Trading_Composite_Hypothesis_Study_v0.1.py | 6008d21c6ee5e2ac7ce6a6a59e87c7f88bd3e7407ce99056a0859e4525ef5f31 |
+| R96 | Chappy_Trading_Hypothesis_Penalty_Study_v0.1.py | 25b88516911ec823b9d88c046c9dba83fd84a1ee6825baa9da15df76fc748ca4 |
 
-Remaining direct source parents: R73 -> R72 Regime Selection (f1678ab42c11426ed78478e4de5231836c09918f2d96998985948adec1d2f429); R79 -> R78 Opportunity Study (f4628d5b6b93c12199bbade62f5423ee6421373ecfc1c52ab9e649b783dd8f9c); R98 -> R97 Hypothesis Pool (be460ac944cbf4168c6fd86cfb03be1f36e0f1a40af60a8c04630b3b312bcb60). R68 has no direct source parent observed; R69 -> R68 is now recovered. R158 diagnostic reads a prior result file, which stays local pending rights review; do not invent a replacement. Resolve recursive parents without relaxing pins. No execution or full dependency closure verified. R170, Offline Lab and Splitter archive inspection remains pending. Do not claim R170 package SHA or archive CRC verified. No data archives committed. Historical source only; not authorized for live use or use with restricted HF data. See research charter.
+R78 was recovered from a Library duplicate with suffix (2), not the unrelated earlier known-data program with the same basename. Original runtime basename restored only after exact pinned-byte validation. Preserve the other version separately if recovered later.
+
+Remaining direct source parents: R71 -> R70 Volume Context (e60569d83993846861afa9f5739f9550aa282bc21cba42355d8498ca7e2a961d); R78 -> R77 Evidence Sensitivity (51dfa84a968c4b87d91a44939d50ca552d28898d572518109b4f9b65eb075e71); R96 -> R95 Hypothesis Capacity (d81281a84a2ad36f90ea9e3cd97a974de7eb78608b1b1d7e441cb5023a6ca2bf). R158 diagnostic reads a prior result file, which stays local pending rights review; do not invent a replacement. Resolve recursive parents without relaxing pins. No execution or full dependency closure verified. R170, Offline Lab and Splitter archive inspection remains pending. Do not claim R170 package SHA or archive CRC verified. No data archives committed. Historical source only; not authorized for live use or use with restricted HF data. See research charter.
