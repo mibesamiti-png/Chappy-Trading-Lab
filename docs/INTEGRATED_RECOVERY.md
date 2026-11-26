@@ -117,3 +117,16 @@ All twelve source texts match the historical Notion code SHA-256; literal source
 | R132 | Chappy_Trading_Stop_Reason_Study_v0.1.py | 4d7b0432b3422cb0d451ab0dcb97b3d0960f7733548139240e5077d85314b53b |
 
 All eleven source texts match historical Notion code SHA-256. Literal dependency digests and the dynamically constructed admission parent names in R127–128 were checked against the recovered inventory before import. Source-only recovery; no new runtime verification or import of market data/results. The static CI checks archived bytes and literal references; dynamic parent verification here is a separate intake check.
+
+## Notion-pinned historical study batch R133–140
+
+| R133 | Chappy_Trading_Data_Recovery_Gate_Study_v0.1.py | e322ce2efff263bbac94aa56b1b41775ba94f603cc328a33b001390d43e4ecb0 |
+| R134 | Chappy_Trading_Mature_Evidence_Study_v0.1.py | 251f811b587bbf6e3a5157b52295c571103e04d73b5c0c7d7355758a0c6822ae |
+| R135 | Chappy_Trading_Receipt_Bias_Study_v0.1.py | d75313a76c65fcc16e158d38c146ce656318d0cd56b7fcd4b7fc4013fa574999 |
+| R136 | Chappy_Trading_Bounded_Receipt_Gate_Study_v0.1.py | 5fa34efdd009efa1790f4fd41473149f0862a43873ed1eed07b0f4354473678a |
+| R137 | Chappy_Trading_Observation_Identity_Study_v0.1.py | fa4add9b464bb226e8a66ceb33c4d55eb654e36d6900a18da66243fc8f434411 |
+| R138 | Chappy_Trading_Audit_Value_Study_v0.1.py | 88d66682d24ad0183d5914bb5b6e66b37f72182043074c8fe67d77fe7d000708 |
+| R139 | Chappy_Trading_External_Audit_Ledger_Study_v0.1.py | 11c001f0e58de01272662cdad13500f9abb071df3ad2907cdb2708fa5267d8f6 |
+| R140 | Chappy_Trading_Supplier_Complement_Study_v0.1.py | df05e43721581f81147009ce0fca9ae2b32980d9e4a35cb02d02bf3a923bc2fb |
+
+All eight source texts match historical Notion code SHA-256. Literal dependency digests and dynamically constructed R139 parent names were checked against the recovered inventory. Synthetic source-only recovery, no new runtime verification or market inputs/results.
