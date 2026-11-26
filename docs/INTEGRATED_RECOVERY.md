@@ -1,7 +1,7 @@
 # Integrated legacy source recovery
-2026-11-27 JST. 46 standalone historical sources recovered from Library and placed together under legacy/integrated_recovery. These are exact hash-pinned historical sources, not a verified extraction of R170. Readback from GitHub matched each recovered text.
+2026-11-27 JST. 46 initially recovered standalone historical sources recovered from Library and placed together under legacy/integrated_recovery. These are exact hash-pinned historical sources, not a verified extraction of R170. Readback from GitHub matched each recovered text.
 
-| Round | Source | SHA-256 verified against historical record or parent pin |
+| Round | Source | SHA-256 (historical pin unless noted below) |
 |---|---|---|
 | R169 | Chappy_Trading_Integrated_Lab_v0.1.py | 06da1cbe4799b1a7f6468756c5af5fd0b0f3a79ecc8b99c2e0bd2798ee87b313 |
 | R168 | Chappy_Trading_Data_Safety_Adapter_v0.1.py | 7f60c306ccfc648570e6cdce4914fb70c88f6a1c3c24b16c7648451e11faedf9 |
@@ -58,3 +58,12 @@ R85 was already committed when the preceding connector batch stopped; verified i
 ## Recovered-source validation (2026-11-27 JST)
 
 Fresh CI run [45876507620](https://github.com/mibesamiti-png/Chappy-Trading-Lab/actions/runs/45876507620) succeeded at exact head `e29336e66d3dd23a61d90334f1a1eba19ef62b4e`. All 49 archived sources matched SHA-256 and compiled. Static audit identified 53 source references: 52 with embedded matching target digests, one historical R172 filename-only import with both file digests independently verified. R68 synthetic control: 185 checks. R169 CLI synthetic stable/reversal/missing: 6 cases each, respectively 5708/5770/5680 internal checks (17158 total); report assertions and overwrite/unapproved archive refusal passed. Python 3.11, NumPy 1.26.4, SciPy 1.12.0 were selected for this new CI, not established as original historical environment versions. No archived Python source changed. No real market data or held-out HF period was used. These checks establish the recovered synthetic entrypoint, not every historical program or R170 package identity, known-data replay, independent profitability, Windows compatibility, or production readiness. Archive inspection remains blocked by unavailable local container access. Further legacy recovery can continue without rerunning unrelated research.
+
+## Supplemental source-only intake
+
+| R163 | Chappy_Trading_Multi_Horizon_CTRL_Evaluation_v0.1.py | efb8400db58fd940790b599e10efb7566f4b759bb3b353825399fa85246546a5 |
+| R164 | Chappy_Trading_Capital_Diagnostic_v0.1.py | 03285b821372c0505e3e6b13f63ce3bd5863afcf65b429261f534b16f72bb655 |
+| R167 | Chappy_Trading_Integration_Audit_v0.1.py | af3436a1825c3737b1ceca3aa1eb47fcf34b216ee57b0ded6730c069eebb9067 |
+| R154 | Chappy_Trading_Offline_Evaluation_CLI_v0.1.py | 655ad5697e33f6c1c3667b6353ebdca47ad600dfa1710c30f7cc2b3873641a5c |
+
+R163 and R164 match the historical R167 pins. R154 and R167 are complete recovered ASCII text with terminal LF and matching library byte size; their digests are newly recorded, not independently corroborated historical pins. R164 requires the prior R163 result JSON; R167 requires saved R160–166 reports. Those result files and known-market inputs are intentionally excluded; the extra sources have not been executed. The earlier 49-file CI is evidence for its exact head, not this expanded inventory.
