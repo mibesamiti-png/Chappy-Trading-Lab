@@ -11,7 +11,7 @@ permissions:
 jobs:
   static-and-synthetic:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -67,7 +67,7 @@ jobs:
           print(f'Named source references: {len(edges)}; embedded matching digest: {len(edges)-len(unpinned_seen)}; explicitly unpinned: {len(unpinned_seen)}')
           print('Static source-reference check, not proof of every dynamic runtime dependency.')
           PY
-      - name: Run reviewed synthetic R68 control only
+      - name: Run reviewed synthetic R68 control
         shell: bash
         run: |
           out="$(mktemp)"
@@ -80,3 +80,55 @@ jobs:
           print('R68 synthetic checks:', r['passed'])
           PY
           rm -f "$out"
+      - name: Set up Python for integrated synthetic checks
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install historical research dependency versions
+        run: python -m pip install --disable-pip-version-check numpy==1.26.4 scipy==1.12.0
+      - name: Exercise frozen R169 entrypoint with synthetic fixtures only
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          script=legacy/integrated_recovery/Chappy_Trading_Integrated_Lab_v0.1.py
+          python "$script" --plan-only --output "$tmp/plan.json"
+          for demo in stable reversal missing; do
+            timeout 240s python "$script" --demo "$demo" --output "$tmp/$demo.json"
+          done
+          python - "$tmp" <<'PY'
+          import json, sys
+          from pathlib import Path
+          from itertools import product
+          root = Path(sys.argv[1])
+          plan = json.loads((root/'plan.json').read_text())
+          assert plan['round'] == 169
+          assert plan['candidate_count'] == 273
+          expected = set(product([20,40], ['FROZEN','STOP','REFRESH']))
+          for demo in ('stable','reversal','missing'):
+              report = json.loads((root/(demo+'.json')).read_text())
+              assert report['status'] == 'OFFLINE_RESEARCH_ONLY'
+              assert report['provenance']['kind'] == 'synthetic'
+              assert report['provenance']['fixture'] == demo
+              assert report['plan'] == plan
+              assert report['passed'] == sum(report['checks'].values()) > 0
+              assert len(report['cases']) == 6
+              assert {(c['fee'],c['mode']) for c in report['cases']} == expected
+              for c in report['cases']:
+                  stop = c['data_stop']
+                  if demo == 'missing':
+                      assert stop is not None, (demo,c['fee'],c['mode'])
+                      assert all(o[1] < stop for o in c['orders'])
+                  else:
+                      assert stop is None, (demo,c['fee'],c['mode'])
+              print('R169 synthetic', demo, 'cases:', len(report['cases']), 'internal checks:', report['passed'])
+          PY
+          # Refusal checks use only an invented non-market payload and existing temporary output.
+          printf 'not an approved archive' > "$tmp/unapproved.zip"
+          before="$(sha256sum "$tmp/plan.json")"
+          if python "$script" --plan-only --output "$tmp/plan.json"; then exit 1; fi
+          test "$before" = "$(sha256sum "$tmp/plan.json")"
+          if python "$script" --known-archive "$tmp/unapproved.zip" --output "$tmp/rejected.json"; then exit 1; fi
+          test ! -e "$tmp/rejected.json"
+          echo 'R169 overwrite and unapproved archive refusal: passed'
