@@ -37,6 +37,9 @@ jobs:
           assert set(other) == {p.name for p in other_files}
           paths = list(root.glob('*.py')) + other_files
           edges = set()
+          # R172 uses a historical filename import without an embedded digest.
+          unpinned_expected = {('Chappy_Market_Data_Provider_v0.1.py', 'Chappy_Market_Data_Collector_v0.1.py')}
+          unpinned_seen = set()
           for p in sorted(paths):
               raw = p.read_bytes()
               assert hashlib.sha256(raw).hexdigest() == (pins | other)[p.name], p.name
@@ -52,10 +55,16 @@ jobs:
                       continue
                   assert name in pins or name in other, (p.name, name, 'missing literal source reference')
                   assert (p.parent / name).is_file(), (p.name, name, 'wrong directory')
-                  assert (pins | other)[name] in src, (p.name, name, 'expected pin not present')
-                  edges.add((p.name, name))
+                  edge = (p.name, name)
+                  if edge in unpinned_expected:
+                      assert (pins | other)[name] not in src, (edge, 'historical exception stale')
+                      unpinned_seen.add(edge)
+                  else:
+                      assert (pins | other)[name] in src, (p.name, name, 'expected pin not present')
+                  edges.add(edge)
           print(f'Archive hashes and Python compilation: {len(paths)}/{len(paths)}')
-          print(f'Named source references with matching target digest present: {len(edges)}')
+          assert unpinned_seen == unpinned_expected, 'historical exception not exercised'
+          print(f'Named source references: {len(edges)}; embedded matching digest: {len(edges)-len(unpinned_seen)}; explicitly unpinned: {len(unpinned_seen)}')
           print('Static source-reference check, not proof of every dynamic runtime dependency.')
           PY
       - name: Run reviewed synthetic R68 control only
