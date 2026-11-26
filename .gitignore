@@ -1,0 +1,27 @@
+# Local / restricted research inputs and results
+*.zip
+*.parquet
+*.csv
+*.tsv
+*.sqlite
+*.sqlite3
+*.db
+*.jsonl
+*.pkl
+*.joblib
+*.npy
+*.npz
+*.pt
+*.onnx
+*.env
+.env*
+*.key
+*.pem
+split_manifest.json
+data/
+outputs/
+private/
+artifacts/
+.local/
+__pycache__/
+.venv/
