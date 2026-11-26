@@ -1,0 +1,73 @@
+name: Legacy recovery audit
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'legacy/**'
+      - 'docs/INTEGRATED_RECOVERY.md'
+      - '.github/workflows/legacy-recovery-audit.yml'
+permissions:
+  contents: read
+jobs:
+  static-and-synthetic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify archived bytes, syntax and pinned source references
+        shell: bash
+        run: |
+          python - <<'PY'
+          import ast, hashlib, re
+          from pathlib import Path
+          root = Path('legacy/integrated_recovery')
+          rows = re.findall(r'^\| R(\d+) \| ([^|]+) \| ([a-f0-9]{64}) \|', Path('docs/INTEGRATED_RECOVERY.md').read_text(), re.M)
+          pins = {n.strip(): h for _, n, h in rows}
+          assert len(pins) == len(rows) == 46, 'inventory count or duplicate'
+          assert set(pins) == {p.name for p in root.glob('*.py')}, 'inventory mismatch'
+          other = {
+              'Chappy_Market_Data_Collector_v0.1.py': '184f3674d28f15cbc9c2c289bf844bc12907eefcafb37f0fb284ae110129a67f',
+              'Chappy_Market_Data_Provider_v0.1.py': 'f6cebc0a63e0ccd6d36f94bbcf6d6952e8008a819cb73598e59eb53fcf896396',
+              'Chappy_Market_Data_Import_v0.1.py': 'f4fb7c654b85a9edaecb8577fef513b87ea79e2ed1fe075df8964a2e86e646ba',
+          }
+          other_files = list(Path('legacy/r171_r173').glob('*.py'))
+          assert set(other) == {p.name for p in other_files}
+          paths = list(root.glob('*.py')) + other_files
+          edges = set()
+          for p in sorted(paths):
+              raw = p.read_bytes()
+              assert hashlib.sha256(raw).hexdigest() == (pins | other)[p.name], p.name
+              src = raw.decode('utf-8')
+              tree = ast.parse(src, filename=str(p))
+              compile(tree, str(p), 'exec')
+              refs = {node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str) and re.fullmatch(r'Chappy_[A-Za-z0-9_]+_v0\.1\.py', node.value)}
+              if p.name in ('Chappy_Trading_OHLCV_Refresh_Study_v0.1.py', 'Chappy_Trading_Variable_Payoff_Core_Study_v0.1.py'):
+                  deps = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'DEPS' for t in n.targets))
+                  refs.update('Chappy_Trading_'+k+'_v0.1.py' for k in deps)
+              for name in sorted(refs):
+                  if name == p.name:
+                      continue
+                  assert name in pins or name in other, (p.name, name, 'missing literal source reference')
+                  assert (p.parent / name).is_file(), (p.name, name, 'wrong directory')
+                  assert (pins | other)[name] in src, (p.name, name, 'expected pin not present')
+                  edges.add((p.name, name))
+          print(f'Archive hashes and Python compilation: {len(paths)}/{len(paths)}')
+          print(f'Named source references with matching target digest present: {len(edges)}')
+          print('Static source-reference check, not proof of every dynamic runtime dependency.')
+          PY
+      - name: Run reviewed synthetic R68 control only
+        shell: bash
+        run: |
+          out="$(mktemp)"
+          python legacy/integrated_recovery/Chappy_Trading_Price_Response_Study_v0.1.py --self-test > "$out"
+          python - "$out" <<'PY'
+          import json, sys
+          r=json.load(open(sys.argv[1]))
+          assert r['passed'] == len(r['tests']) and r['passed'] > 0
+          assert all(x['pass'] is True for x in r['tests'])
+          print('R68 synthetic checks:', r['passed'])
+          PY
+          rm -f "$out"
