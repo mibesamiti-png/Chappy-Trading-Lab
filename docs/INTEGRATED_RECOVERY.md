@@ -101,3 +101,19 @@ All twelve original source texts match their historical code SHA-256 in the Noti
 | R121 | Chappy_Trading_Admission_Allocation_Study_v0.1.py | af6ee2c9beb5b76b3c8d0c7cc933181f5dccc54dd061b9dd07ce90e67432d2dc |
 
 All twelve source texts match the historical Notion code SHA-256; literal source dependencies present. Source-only recovery, not fresh runtime verification. No market data or historical result reports imported.
+
+## Notion-pinned historical study batch R122–132
+
+| R122 | Chappy_Trading_Admission_Depth_Study_v0.1.py | 30a626a694630da343775db24ad61ddfc3dd222ebfe5837d6ce30688dbe47a8c |
+| R123 | Chappy_Trading_Admission_Drift_Study_v0.1.py | 7caf4fb1116575da2566c56f8a2c121d87ffda22f8c621179a6dcb58c0ae8b29 |
+| R124 | Chappy_Trading_Admission_Integration_Study_v0.1.py | 62d2f2fa19717d4565048a47496bdd983b357670f67a8a6af3c26c02e4a25472 |
+| R125 | Chappy_Trading_Admission_Monitor_Study_v0.1.py | d74b8b35e70f68cf4aca2ff30c38919dae7628956b7fc3b8af01d28be37fccc2 |
+| R126 | Chappy_Trading_Admission_Recovery_Study_v0.1.py | 8b33b35849d7a6c7dfbb1de0220dff22ba5beb3e2bd9e3faea4dfa5f9739e225 |
+| R127 | Chappy_Trading_Admission_Ledger_Integration_Study_v0.1.py | 5b9a8366135cc06aa98497a56864e6cd6255f20032b1be33b165f836a2d30ad6 |
+| R128 | Chappy_Trading_Eligible_Evidence_Study_v0.1.py | c2ea6f1db1fca40a8bc74c1acda3bcd223815e86c1b9743aa4060177c4d6c346 |
+| R129 | Chappy_Trading_Eligible_Lifecycle_Study_v0.1.py | 73292f378ce7a84b6d07b682a95d7c4f519f682f5e670da06b96655ae95fd395 |
+| R130 | Chappy_Trading_Coverage_Monitor_Study_v0.1.py | 7a4b57b376dd80b2373815f07ed99ba4abbeaabb9da8db610f436946a53fc0ac |
+| R131 | Chappy_Trading_Delayed_Coverage_Study_v0.1.py | e266a077e929dec881b29fee71129c0f3e8e521b395fb5488f982cd5f0e92868 |
+| R132 | Chappy_Trading_Stop_Reason_Study_v0.1.py | 4d7b0432b3422cb0d451ab0dcb97b3d0960f7733548139240e5077d85314b53b |
+
+All eleven source texts match historical Notion code SHA-256. Literal dependency digests and the dynamically constructed admission parent names in R127–128 were checked against the recovered inventory before import. Source-only recovery; no new runtime verification or import of market data/results. The static CI checks archived bytes and literal references; dynamic parent verification here is a separate intake check.
