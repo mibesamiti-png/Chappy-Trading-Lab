@@ -9,6 +9,7 @@ Research reproducible statistical properties of markets under explicit data lice
 ## Start here
 
 - [ROADMAP.md](ROADMAP.md) — gates and acceptance criteria.
+- [RESEARCH_CHARTER.md](RESEARCH_CHARTER.md) — detailed questions, evidence and identification limits.
 - [STATE.md](STATE.md) — latest reported status and limitations.
 - [TASK_QUEUE.json](TASK_QUEUE.json) — prioritized research work.
 - [AUTONOMY_RULES.md](AUTONOMY_RULES.md) — execution, safety, publication and stop rules.
@@ -21,3 +22,11 @@ Work performs computation in its authorized environment. Chat coordinates and re
 Do not upload source datasets, split archives, private manifests, unapproved derived results, model artifacts, credentials, or personal paths. The repository's public visibility does not license third-party data. Inspect all files and diffs before pushing; ignore rules alone are not sufficient.
 
 No financial performance is claimed. No software license is selected yet.
+
+## Latest proposed operational handoff
+
+[Draft PR #1](https://github.com/mibesamiti-png/Chappy-Trading-Lab/pull/1) records the bounded local persistence/audit/robustness run. Until maintainer review, read its proposed STATE, TASK_QUEUE and HANDOFF alongside main. No schedule activation or independent Chat verification is claimed.
+
+- [Persistence evidence and unverified scheduler boundary](operations/PERSISTENCE.md)
+- [Shared lease and completed-task protocol](operations/LEASE_PROTOCOL.md)
+- [Public file/content review boundary](operations/PUBLICATION.md)
