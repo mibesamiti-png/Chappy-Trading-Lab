@@ -29,7 +29,7 @@ jobs:
           root = Path('legacy/integrated_recovery')
           rows = re.findall(r'^\| R(\d+) \| ([^|]+) \| ([a-f0-9]{64}) \|', Path('docs/INTEGRATED_RECOVERY.md').read_text(), re.M)
           pins = {n.strip(): h for _, n, h in rows}
-          assert len(pins) == len(rows) == 85, 'inventory count or duplicate'
+          assert len(pins) == len(rows) == 93, 'inventory count or duplicate'
           assert set(pins) == {p.name for p in root.glob('*.py')}, 'inventory mismatch'
           other = {
               'Chappy_Market_Data_Collector_v0.1.py': '184f3674d28f15cbc9c2c289bf844bc12907eefcafb37f0fb284ae110129a67f',
