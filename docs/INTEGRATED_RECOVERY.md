@@ -130,3 +130,15 @@ All eleven source texts match historical Notion code SHA-256. Literal dependency
 | R140 | Chappy_Trading_Supplier_Complement_Study_v0.1.py | df05e43721581f81147009ce0fca9ae2b32980d9e4a35cb02d02bf3a923bc2fb |
 
 All eight source texts match historical Notion code SHA-256. Literal dependency digests and dynamically constructed R139 parent names were checked against the recovered inventory. Synthetic source-only recovery, no new runtime verification or market inputs/results.
+
+## Notion-pinned historical study batch R141–147
+
+| R141 | Chappy_Trading_Core_Comparison_v0.1.py | 1596290500da9ddd29a61cfeb1daa3c2c779dabcfc2a5022b4bd21f75774e035 |
+| R142 | Chappy_Trading_Capital_Comparison_v0.1.py | 9bcae09e6015b1885f69bb771f8f8493e759c1c8d5c4f55e4914efa7659b69f1 |
+| R143 | Chappy_Trading_Core_Diagnostic_Study_v0.1.py | aeace4b5ba601ffa06643a73d72707299c19ba1d224978149ceb09e98258c79c |
+| R144 | Chappy_Trading_Core_Pause_Comparison_v0.1.py | a3fada9978981194b067052ab79e30b4c9e69166b09ee26e2964826b455f2753 |
+| R145 | Chappy_Trading_Core_Admission_Comparison_v0.1.py | f5278f2d16ec89f19d997f2515ea9b2f5ebe178d0ea9437a2f8aa1b34fd2f43b |
+| R146 | Chappy_Trading_Core_Cost_Comparison_v0.1.py | 40587dff6323c193833bb4b72ad68b8d1361ce511cc110aeee1254e5733e8c3d |
+| R147 | Chappy_Trading_Core_Evidence_Diagnostic_v0.1.py | 9abe16057d93b459e152304500786cc97b107155c7e06d7fa1820dbfc59cde9a |
+
+All seven source texts match historical Notion code SHA-256. R141 imports R103 and R142 imports R141 by filename, computing a source digest in the plan rather than enforcing a fixed embedded pin; their archived source bytes are independently checked. No historical code was changed to retrofit a pin. R143 also requires the previous R142 examples JSON for its full diagnostic; it was not imported. Static CI now includes the known dynamic PARENTS dictionaries in R127, R128 and R139. No new runtime tests or market data imported.
