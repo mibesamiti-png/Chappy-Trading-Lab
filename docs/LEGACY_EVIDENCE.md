@@ -1,0 +1,29 @@
+# Historical evidence and lessons (revision 1)
+2026-11-27 JST. Source: original historical acceptance/result records read from the user's library; not a new execution. No third-party bars, derived market statistics, result dumps or private file identifiers are published here. Keep HF academic research separate.
+
+## Verified reading of saved acceptance records
+| Round | Historical reported check count/status | What it supports | What remains unproved |
+|---|---|---|---|
+| R169 | 109 checks; ENTRYPOINT_ACCEPTED_OFFLINE_FREEZE_PENDING | Offline entrypoint acceptance; pinned inputs, accounting, maturity, terminal/shadow behavior, refusal of ambiguous or unapproved input | Full regression pending; no prospective returns |
+| R170 | 39 package-level boolean checks passed; OFFLINE_PACKAGE_ACCEPTED | Package integrity and compatibility with saved R168/R169 tests on stable/reversal/missing/known inputs; refusal of tamper, extra/missing dependencies, unapproved ZIP, arbitrary CSV and overwrite | Prior optimized reversal/known output reused, not freshly executed; full historical regression, Windows, clean venv, actual feed/fills and independent prospective returns untested; no data collector/new data |
+| R171 | 1,647 synthetic checks; SYNTHETIC_STORAGE_FOUNDATION_ONLY | Exact fixed-point values, duplicate/retry idempotence, transactional rollback, evidence links, persistence | No real provider/network/prices; synthetic calendar not exchange-verified |
+| R172 | 41 synthetic checks; SYNTHETIC_PROVIDER_CONTRACT_ONLY | Bounded identical requests, partial recovery, malformed input rejection, raw synthetic replay, pending attempts block, tamper checks | No HTTP or real prices; no automatic pending recovery; two commit boundaries; no backoff or live provider |
+| R173 | 436 fixture checks; OFFLINE_IMPORT_FIXTURE_ONLY | Strict CSV shape/time/precision validation, source isolation, replay, rejection, rollback and persistence | No market acquisition or provider authentication; declared receipt is not original market receipt; fixed historic scope; missing slots are diagnostic, not proof of provider error |
+
+The counts above have different meanings and must not be summed as a unified regression or interpreted as model accuracy. R170 is a frozen offline package, not a proven live system. R173's 436 checks are not R170 checks. All source/test files need separate reproduction before declaring current CI green.
+
+## Prior investigations and failure/limitation ledger
+| ID | Historical question | Evidence read | Carry-forward rule |
+|---|---|---|---|
+| L01 | Can a policy distinguish null from structured synthetic effects? | R85 Random Market Study source: IID, weak/moderate/strong Markov and irregular-bias fixtures; fixed delayed observations | Include null and positive controls. Do not assume an artificial effect exists in real markets. Outcome comparison not yet recovered in full. |
+| L02 | Does independent admission avoid chance selection? | R86 Statistical Gate Study source: one-shot conditional binomial screening, separate seeded evaluation, irregular dependence explicitly a stress case | Use independent validation and dependence-aware assumptions; do not re-test until accepted. Outcome not yet fully reviewed. |
+| L03 | Do selective hypotheses outperform complete maps? | R99 Selective Hypothesis Study source: finite full/cell-selective pool, WAIT-first ties, one independent test | Avoid unbounded candidate expansion; preserve the entire family and WAIT. Outcome not yet fully reviewed. |
+| L04 | Does gross signal performance survive capital constraints and costs? | R164 saved diagnostic limitations: all-intent sums are not actual accounts; rejected outcomes hindsight only; zero-fee changes permitted positions, so it is a distinct counterfactual; audit rejection at higher fee | Distinguish accounting, selection and retrospective attribution. Never infer unknown-market validity from a known replay. No raw historical returns published. |
+| L05 | Can a failing system refresh safely? | R166 source: fixed synthetic cases, maximum one refresh, no orders while paused; R168 source: terminal DATA stop requires repair and independent requalification | Differentiate economic weakness, unavailable mature evidence, and structural data faults. A DATA stop is not a reason to auto-resume or relax admission. |
+| L06 | Is a frozen package equivalent to a deployable system? | R170 acceptance limitations above | NO: retain explicit offline boundary and untested conditions; no execution of orders. |
+| L07 | Does successful storage prove authentic live data? | R171–173 records above | NO: synthetic/replay/authorized import acceptance proves only stated invariants. No network integration or actual market receipt established. |
+
+Rows L01–L03 are recovered *methods*, not established negative results. Do not classify them as successful or failed until underlying reports are reviewed. Future ledger entries should contain round, exact question, evidence class (synthetic / known historical / unseen / unavailable), protocol version, outcome (supported / rejected / inconclusive / unreviewed), limitation, and action (reuse / do not repeat / revisit under new evidence). Store detailed historical evidence locally; publish only sanitized conclusions permitted by applicable rights.
+
+## Source references (local recovery names)
+Trading_Round169_acceptance_verified.json; Trading_Round170_acceptance.json; Trading_Round171_results.json; Trading_Round172_results.json; Trading_Round173_results.json; Trading_Round164_results.json (limitations section only); Chappy_Trading_Random_Market_Study_v0.1.py; Chappy_Trading_Statistical_Gate_Study_v0.1.py; Chappy_Trading_Selective_Hypothesis_Study_v0.1.py; Chappy_Trading_Capital_Lifecycle_Study_v0.1.py; Chappy_Trading_Data_Safety_Adapter_v0.1.py. These are names for recovery, not files committed here.
