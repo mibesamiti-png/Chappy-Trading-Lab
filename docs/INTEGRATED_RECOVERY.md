@@ -67,3 +67,20 @@ Fresh CI run [45876507620](https://github.com/mibesamiti-png/Chappy-Trading-Lab/
 | R154 | Chappy_Trading_Offline_Evaluation_CLI_v0.1.py | 655ad5697e33f6c1c3667b6353ebdca47ad600dfa1710c30f7cc2b3873641a5c |
 
 R163 and R164 match the historical R167 pins. R154 and R167 are complete recovered ASCII text with terminal LF and matching library byte size; their digests are newly recorded, not independently corroborated historical pins. R164 requires the prior R163 result JSON; R167 requires saved R160–166 reports. Those result files and known-market inputs are intentionally excluded; the extra sources have not been executed. The earlier 49-file CI is evidence for its exact head, not this expanded inventory.
+
+## Notion-pinned historical study batch R87–88 and R100–109
+
+| R87 | Chappy_Trading_Evidence_Lifetime_Study_v0.1.py | f274f4dd7d2fbb598f883178edd771fe86483a61dde67adaa10310540ab50c4d |
+| R88 | Chappy_Trading_Sequential_Gate_Study_v0.1.py | cbd53caad43237dfc40fadf0a569cba582ca3f2f78fd89af0bb91ada2adea9af |
+| R100 | Chappy_Trading_Rare_Evidence_Study_v0.1.py | c3197b341bd9abe81b21a5d0cb44f6d84dad3daab5d1151adb08f46ca267677a |
+| R101 | Chappy_Trading_Integrated_Hypothesis_Study_v0.1.py | 377898f4b86a7e505bda78e5ce0ff713e623c9432c46258a251c755bfc7663c2 |
+| R102 | Chappy_Trading_Integrated_Refresh_Study_v0.1.py | f7967f8bff45c20fa7e87be185b822088439ef51ac33ebf868ee0967cf4b66a7 |
+| R103 | Chappy_Trading_Refresh_Trigger_Study_v0.1.py | cb4d0570492b17d7e4fb963cba0191572463e67d96adb805d44af5fbb9d244ca |
+| R104 | Chappy_Trading_Refresh_Robustness_Study_v0.1.py | c791a4e064e02d302d0a41a7c5955c613483d855e327f3cc1d7e6306dddfee88 |
+| R105 | Chappy_Trading_Knowledge_Archive_Study_v0.1.py | 2b33261821e4127ae9cd46329a99db18014c132435d949d315eb16e77241f254 |
+| R106 | Chappy_Trading_Archive_Race_Study_v0.1.py | 8d7d56f228ffdc395040bbc240f1c00ab59123a0cc49305950083963423983a7 |
+| R107 | Chappy_Trading_Parallel_Review_Study_v0.1.py | 150fd6cfb7d62efb90746205e726c6e1b7830f16fb113b3347894193ac181d0e |
+| R108 | Chappy_Trading_Switch_Evidence_Study_v0.1.py | 0153aa54b952e6c2a3ddda4f093190aa6df540f9e4b4966a0055a99f31649d41 |
+| R109 | Chappy_Trading_Paired_Variance_Study_v0.1.py | 5d29733e2505cc2cc1990e748f8ff775d952a5de9f8b827ab65b29cb77d346b4 |
+
+All twelve original source texts match their historical code SHA-256 in the Notion notebook or a pinned historical dependency. Source-only intake; synthetic study execution has not been repeated. Static CI checks the same-directory dependencies and archived bytes. No real market data or result reports imported.
