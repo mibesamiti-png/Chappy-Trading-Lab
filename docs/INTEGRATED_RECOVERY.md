@@ -1,5 +1,5 @@
 # Integrated legacy source recovery
-2026-11-27 JST. 43 standalone historical sources recovered from Library and placed together under legacy/integrated_recovery. These are exact hash-pinned historical sources, not a verified extraction of R170. Readback from GitHub matched each recovered text.
+2026-11-27 JST. 46 standalone historical sources recovered from Library and placed together under legacy/integrated_recovery. These are exact hash-pinned historical sources, not a verified extraction of R170. Readback from GitHub matched each recovered text.
 
 | Round | Source | SHA-256 verified against historical record or parent pin |
 |---|---|---|
@@ -47,7 +47,10 @@
 | R90 | Chappy_Trading_Feature_Interaction_Study_v0.1.py | 80f993c78544601a8b854acc0c6c1e70bf0e465a5e8a48ab02de53edb434cdc5 |
 | R86 | Chappy_Trading_Statistical_Gate_Study_v0.1.py | 27df717768cc5ada8d11f7d53ede615c24399eb125c68d2b29e2883503ee6b8b |
 | R89 | Chappy_Trading_Conditional_Edge_Study_v0.1.py | ffe40de972effd252c9e0fa27894551d9585f74850dfd7209f7db03fed560daf |
+| R85 | Chappy_Trading_Random_Market_Study_v0.1.py | f51883f82afac45140b2cf1b6ffbbe4ec8f77a1ecf935e19eb8c749f04e7f63f |
+| R84 | Chappy_Trading_Latency_Phase_Study_v0.1.py | 846aced7c1e28922bf32c290f328c8790e5b2579c0457c943a32035d01d4293d |
+| R83 | Chappy_Trading_Diagnostic_Response_Study_v0.1.py | 795bb258acfaf491d1710b2671c57373a542f9417ba01b9e5db62fb6cc3c5588 |
 
 R78 was recovered from a Library duplicate with suffix (2), not the unrelated earlier known-data program with the same basename. Original runtime basename restored only after exact pinned-byte validation. Preserve the other version separately if recovered later.
 
-Remaining direct source parents: R86 -> R85 Random Market (Chappy_Trading_Random_Market_Study_v0.1.py, f51883f82afac45140b2cf1b6ffbbe4ec8f77a1ecf935e19eb8c749f04e7f63f). R89 -> R71 already recovered. This batch stopped at the connector tool-call limit; four committed and verified files were reconciled into the ledger. R158 diagnostic reads a prior result file, which stays local pending rights review; do not invent a replacement. Resolve recursive parents without relaxing pins. No execution or full dependency closure verified. R170, Offline Lab and Splitter archive inspection remains pending. Do not claim R170 package SHA or archive CRC verified. No data archives committed. Historical source only; not authorized for live use or use with restricted HF data. See research charter.
+R85 was already committed when the preceding connector batch stopped; verified its original pin and exact readback without overwriting. R84 and R83 are newly recovered. R83 -> R82 already recovered. No outstanding direct source parents in the tracked recovery frontier; a full static dependency audit and runtime verification remain pending. R158 diagnostic reads a prior result file, which stays local pending rights review; do not invent a replacement. R170, Offline Lab and Splitter archive inspection remains pending. Do not claim R170 package SHA or archive CRC verified. No data archives committed. Historical source only; not authorized for live use or use with restricted HF data. See research charter.
