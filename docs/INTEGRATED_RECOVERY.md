@@ -1,5 +1,5 @@
 # Integrated legacy source recovery
-2026-11-27 JST. Nine standalone historical sources recovered from Library and placed together under legacy/integrated_recovery. These are exact hash-pinned historical sources, not a verified extraction of R170. Readback from GitHub matched each recovered text.
+2026-11-27 JST. Fourteen standalone historical sources recovered from Library and placed together under legacy/integrated_recovery. These are exact hash-pinned historical sources, not a verified extraction of R170. Readback from GitHub matched each recovered text.
 
 | Round | Source | SHA-256 verified against historical record or parent pin |
 |---|---|---|
@@ -13,5 +13,10 @@
 
 | R160 | Chappy_Trading_Market_Context_Adapter_v0.1.py | 14d2affe89176df07d784780add75d0bf08b91f96759f9d99de0f92973af0677 |
 | R152 | Chappy_Trading_CSV_Input_Guard_v0.1.py | c4a4ad009a8c4cf87c2fce344525bf8dc1d38971a4d734ac1fa2bdd46d4fe0ec |
+| R158 | Chappy_Trading_Known_Market_Diagnostic_v0.1.py | cfbd00bfcefa91ec9bbdcf5fae9ec2f81b7d8daa1fc96a3df0255ad14fb7a589 |
+| R151 | Chappy_Trading_OHLCV_Refresh_Study_v0.1.py | dd25cb1de68a2db67cfb9455d74ab7389561967fdc220eb7c912f35b868cf4d3 |
+| R157 | Chappy_Trading_CTRL_Evaluation_v0.1.py | ec13774a49d1cf106df85ab04bbe01977d32c5058b497daacc33cb35a9eaf41d |
+| R150 | Chappy_Trading_OHLCV_Capital_Study_v0.1.py | 4583053b7c6a1cd82f9537372a43eb77adc6bce91c6b13f085446b3842108a61 |
+| R82 | Chappy_Trading_Economic_Monitor_Study_v0.1.py | e3e830034f1e13382232ebe6d5658ff38722e36570ab0e34210ab294abe919d4 |
 
-Additional direct missing parents: R160 -> Chappy_Trading_Known_Market_Diagnostic_v0.1.py (cfbd00bfcefa91ec9bbdcf5fae9ec2f81b7d8daa1fc96a3df0255ad14fb7a589); R152 -> Chappy_Trading_OHLCV_Refresh_Study_v0.1.py (dd25cb1de68a2db67cfb9455d74ab7389561967fdc220eb7c912f35b868cf4d3). Resolve recursive parents without relaxing pins. No execution or full dependency closure verified. R170, Offline Lab and Splitter archives materialized but could not be inspected in this run. Do not claim R170 package SHA or archive CRC verified. No data archives were committed. Historical source only; not authorized for live use or use with restricted HF data. See research charter.
+Remaining direct source parents: R157 -> R156 CTRL Intake (51a72c0dd6b961a654fbc67438dcf123aa5c9a22221229aee55ed7e69c505ad5); R150 -> R149 Variable Payoff Core (a5a4d5189f338382e67c1ff572daf4dfabc9a8ca308cdfdec78937a459492103); R82 -> R81 Knowledge Refresh (620529a8bd827e567e6cb30a45575cf46b206b27b70f6e7cbdf27598279de707). R158 diagnostic also reads a prior result file, which must stay local pending rights review; do not substitute an invented result. Resolve recursive parents without relaxing pins. No execution or full dependency closure verified. R170, Offline Lab and Splitter archive inspection remains pending. Do not claim R170 package SHA or archive CRC verified. No data archives committed. Historical source only; not authorized for live use or use with restricted HF data. See research charter.
