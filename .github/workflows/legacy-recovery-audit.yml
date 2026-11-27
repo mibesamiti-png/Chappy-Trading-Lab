@@ -1,0 +1,236 @@
+name: Legacy recovery audit
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'legacy/**'
+      - 'docs/INTEGRATED_RECOVERY.md'
+      - 'docs/EARLY_SOURCE_INTAKE.md'
+      - '.github/workflows/legacy-recovery-audit.yml'
+permissions:
+  contents: read
+concurrency:
+  group: legacy-audit-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  archive-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify archived bytes, syntax and pinned source references
+        shell: bash
+        run: |
+          python - <<'PY'
+          import ast, hashlib, re
+          from pathlib import Path
+          root = Path('legacy/integrated_recovery')
+          rows = re.findall(r'^\| R(\d+) \| ([^|]+) \| ([a-f0-9]{64}) \|', Path('docs/INTEGRATED_RECOVERY.md').read_text(), re.M)
+          pins = {n.strip(): h for _, n, h in rows}
+          assert len(pins) == len(rows) == 122, 'inventory count or duplicate'
+          assert set(pins) == {p.name for p in root.glob('*.py')}, 'inventory mismatch'
+          other = {
+              'Chappy_Market_Data_Collector_v0.1.py': '184f3674d28f15cbc9c2c289bf844bc12907eefcafb37f0fb284ae110129a67f',
+              'Chappy_Market_Data_Provider_v0.1.py': 'f6cebc0a63e0ccd6d36f94bbcf6d6952e8008a819cb73598e59eb53fcf896396',
+              'Chappy_Market_Data_Import_v0.1.py': 'f4fb7c654b85a9edaecb8577fef513b87ea79e2ed1fe075df8964a2e86e646ba',
+          }
+          other_files = list(Path('legacy/r171_r173').glob('*.py'))
+          assert set(other) == {p.name for p in other_files}
+          paths = list(root.glob('*.py')) + other_files
+          edges = set()
+          # Historical filename-only imports: source bytes still verified independently.
+          unpinned_expected = {
+              ('Chappy_Market_Data_Provider_v0.1.py', 'Chappy_Market_Data_Collector_v0.1.py'),
+              ('Chappy_Trading_Core_Comparison_v0.1.py', 'Chappy_Trading_Refresh_Trigger_Study_v0.1.py'),
+              ('Chappy_Trading_Capital_Comparison_v0.1.py', 'Chappy_Trading_Core_Comparison_v0.1.py'),
+          }
+          unpinned_seen = set()
+          for p in sorted(paths):
+              raw = p.read_bytes()
+              assert hashlib.sha256(raw).hexdigest() == (pins | other)[p.name], p.name
+              src = raw.decode('utf-8')
+              tree = ast.parse(src, filename=str(p))
+              compile(tree, str(p), 'exec')
+              refs = {node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str) and re.fullmatch(r'Chappy_[A-Za-z0-9_]+_v\d+\.\d+\.py', node.value)}
+              if p.name in ('Chappy_Trading_OHLCV_Refresh_Study_v0.1.py', 'Chappy_Trading_Variable_Payoff_Core_Study_v0.1.py'):
+                  deps = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'DEPS' for t in n.targets))
+                  refs.update('Chappy_Trading_'+k+'_v0.1.py' for k in deps)
+              if p.name == 'Chappy_Trading_Integration_Audit_v0.1.py':
+                  audit_pins = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'PINS' for t in n.targets))
+                  refs.update('Chappy_Trading_'+v[0]+'_v0.1.py' for v in audit_pins.values())
+              if p.name in ('Chappy_Trading_Admission_Ledger_Integration_Study_v0.1.py', 'Chappy_Trading_Eligible_Evidence_Study_v0.1.py', 'Chappy_Trading_External_Audit_Ledger_Study_v0.1.py'):
+                  parents = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'PARENTS' for t in n.targets))
+                  prefix = 'Chappy_Trading_' if p.name == 'Chappy_Trading_External_Audit_Ledger_Study_v0.1.py' else 'Chappy_Trading_Admission_'
+                  refs.update(prefix+k+'_Study_v0.1.py' for k in parents)
+              if p.name == 'Chappy_Trading_Integration_Study_v0.1.py':
+                  integration_pins = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'PINS' for t in n.targets))
+                  refs.update('Chappy_Trading_'+v[0]+'_v0.1.py' for v in integration_pins.values())
+              for name in sorted(refs):
+                  if name == p.name:
+                      continue
+                  assert name in pins or name in other, (p.name, name, 'missing literal source reference')
+                  assert (p.parent / name).is_file(), (p.name, name, 'wrong directory')
+                  edge = (p.name, name)
+                  if edge in unpinned_expected:
+                      assert (pins | other)[name] not in src, (edge, 'historical exception stale')
+                      unpinned_seen.add(edge)
+                  else:
+                      assert (pins | other)[name] in src, (p.name, name, 'expected pin not present')
+                  edges.add(edge)
+          print(f'Archive hashes and Python compilation: {len(paths)}/{len(paths)}')
+          assert unpinned_seen == unpinned_expected, 'historical exception not exercised'
+          print(f'Named source references: {len(edges)}; embedded matching digest: {len(edges)-len(unpinned_seen)}; explicitly unpinned: {len(unpinned_seen)}')
+          print('Static source-reference check, not proof of every dynamic runtime dependency.')
+          PY
+      - name: Verify isolated early source archive (no execution)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, re
+          from pathlib import Path
+          root = Path('legacy/early_source_only')
+          rows = re.findall(r'^\| R(\d+) \| ([^|]+) \| ([a-f0-9]{64}) \|', Path('docs/EARLY_SOURCE_INTAKE.md').read_text(), re.M)
+          pins = {n.strip(): h for _, n, h in rows}
+          assert len(pins) == len(rows) == 29
+          assert set(pins) == {p.name for p in root.glob('*.py')}
+          for p in sorted(root.glob('*.py')):
+              raw = p.read_bytes()
+              assert hashlib.sha256(raw).hexdigest() == pins[p.name], p.name
+              compile(raw, str(p), 'exec')
+          print(f'Early source-only archive: {len(pins)}/{len(pins)} hashes and syntax; historical pin and runtime not verified')
+          PY
+      - name: Run reviewed synthetic R68 control
+        shell: bash
+        run: |
+          out="$(mktemp)"
+          python legacy/integrated_recovery/Chappy_Trading_Price_Response_Study_v0.1.py --self-test > "$out"
+          python - "$out" <<'PY'
+          import json, sys
+          r=json.load(open(sys.argv[1]))
+          assert r['passed'] == len(r['tests']) and r['passed'] > 0
+          assert all(x['pass'] is True for x in r['tests'])
+          print('R68 synthetic checks:', r['passed'])
+          PY
+          rm -f "$out"
+  integrated-r169:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Set up Python for integrated synthetic checks
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install historical research dependency versions
+        run: python -m pip install --disable-pip-version-check numpy==1.26.4 scipy==1.12.0
+      - name: Exercise frozen R169 entrypoint with synthetic fixtures only
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          script=legacy/integrated_recovery/Chappy_Trading_Integrated_Lab_v0.1.py
+          python "$script" --plan-only --output "$tmp/plan.json"
+          for demo in stable reversal missing; do
+            timeout 240s python "$script" --demo "$demo" --output "$tmp/$demo.json"
+          done
+          python - "$tmp" <<'PY'
+          import json, sys
+          from pathlib import Path
+          from itertools import product
+          root = Path(sys.argv[1])
+          plan = json.loads((root/'plan.json').read_text())
+          assert plan['round'] == 169
+          # R162: 3 panels x 3 horizons x (273 tables - WAIT) + one WAIT.
+          assert plan['candidate_count'] == 1 + 3 * 3 * (273 - 1), plan['candidate_count']
+          expected = set(product([20,40], ['FROZEN','STOP','REFRESH']))
+          for demo in ('stable','reversal','missing'):
+              report = json.loads((root/(demo+'.json')).read_text())
+              assert report['status'] == 'OFFLINE_RESEARCH_ONLY'
+              assert report['provenance']['kind'] == 'synthetic'
+              assert report['provenance']['fixture'] == demo
+              assert report['plan'] == plan
+              assert report['passed'] == sum(report['checks'].values()) > 0
+              assert len(report['cases']) == 6
+              assert {(c['fee'],c['mode']) for c in report['cases']} == expected
+              for c in report['cases']:
+                  stop = c['data_stop']
+                  if demo == 'missing':
+                      assert stop is not None, (demo,c['fee'],c['mode'])
+                      assert all(o[1] < stop for o in c['orders'])
+                  else:
+                      assert stop is None, (demo,c['fee'],c['mode'])
+              print('R169 synthetic', demo, 'cases:', len(report['cases']), 'internal checks:', report['passed'])
+          PY
+          # Refusal checks use only an invented non-market payload and existing temporary output.
+          printf 'not an approved archive' > "$tmp/unapproved.zip"
+          before="$(sha256sum "$tmp/plan.json")"
+          if python "$script" --plan-only --output "$tmp/plan.json"; then exit 1; fi
+          test "$before" = "$(sha256sum "$tmp/plan.json")"
+          if python "$script" --known-archive "$tmp/unapproved.zip" --output "$tmp/rejected.json"; then exit 1; fi
+          test ! -e "$tmp/rejected.json"
+          echo 'R169 overwrite and unapproved archive refusal: passed'
+  legacy-self-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - round: R154
+            script: legacy/integrated_recovery/Chappy_Trading_Offline_Evaluation_CLI_v0.1.py
+            expected: 0
+            scientific: true
+          - round: R171
+            script: legacy/r171_r173/Chappy_Market_Data_Collector_v0.1.py
+            expected: 1647
+            scientific: false
+          - round: R172
+            script: legacy/r171_r173/Chappy_Market_Data_Provider_v0.1.py
+            expected: 41
+            scientific: false
+          - round: R173
+            script: legacy/r171_r173/Chappy_Market_Data_Import_v0.1.py
+            expected: 436
+            scientific: false
+    name: Synthetic self-test ${{ matrix.round }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned research dependencies when required
+        if: matrix.scientific
+        run: python -m pip install --disable-pip-version-check numpy==1.26.4 scipy==1.12.0
+      - name: Run fixed historical synthetic self-test only
+        shell: bash
+        env:
+          SCRIPT: ${{ matrix.script }}
+          ROUND: ${{ matrix.round }}
+          EXPECTED: ${{ matrix.expected }}
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          python "$SCRIPT" --self-test --output "$tmp/report.json"
+          python - "$tmp/report.json" "$ROUND" "$EXPECTED" <<'PY'
+          import json, sys
+          with open(sys.argv[1]) as f:
+              report = json.load(f)
+          count = report['passed']
+          assert count == sum(report['checks'].values()) > 0
+          expected = int(sys.argv[3])
+          if expected:
+              assert count == expected, (sys.argv[2], count, expected)
+          print(sys.argv[2], 'synthetic internal checks:', count)
+          PY
