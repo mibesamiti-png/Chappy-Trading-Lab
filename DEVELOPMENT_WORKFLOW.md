@@ -15,6 +15,8 @@ No ABCD teams, specialist assignments, commander bureaucracy, extra labs or mand
 ## Exception-only method audit
 Use when evidence contradicts a known control, repeated fixes fail, a simpler method exists, cost exceeds plausible benefit, or task appears complete. Ask: Is the measuring instrument correct? Is the absolute effect relevant to the goal? Is there a simpler existing solution? Does the deliverable actually meet the goal? Start with one cheap discriminating control. Do not repeatedly audit the audit. Report purpose/evidence/decision/next action in up to four lines; no extra normal-run ritual. Do not move acceptance thresholds after observing results.
 
+For a practical supplement covering hypothesis choice, measurement validity, independent scientific verification and stop decisions, see [DIL research decision guide](DIL_RESEARCH_GUIDE.md). It adds no execution permissions or mandatory workflow; [source evidence and limits](DIL_TRANSFER_EVIDENCE.md) distinguish measured DIL results from proposals and CTL adaptations.
+
 ## Efficiency measurement and adoption
 Measure actual calls, duplicated setup, user interventions, elapsed time, and quality only when readily available. No fabricated token/quota savings. A short handoff alone is not proof of faster research. Prefer a simpler procedure unless it removes required evidence; remove redundant steps rather than quality gates. Trial on the next already authorized task, then retain only improvements supported by actual use. Do not launch a standalone process-improvement research project.
 
