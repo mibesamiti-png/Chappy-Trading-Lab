@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": 1,
+  "revision": 2,
   "holdout": {
     "year": 2026,
     "status": "locked",
@@ -10,46 +10,55 @@
     {
       "id": "CTL-001",
       "priority": 1,
-      "status": "ready",
+      "status": "blocked",
       "title": "Verify Work/Chat handoff and cross-run persistence",
-      "acceptance": "read current repo state and confirm local inputs and artifacts survive a fresh run; report only non-sensitive status"
+      "acceptance": "read current repo state and confirm local inputs and artifacts survive a fresh run; report only non-sensitive status",
+      "progress": "Fresh isolated interpreter access/checkpoint probe and duplicate controls passed. Actual fresh scheduled-agent continuity remains unverified; no schedule enabled.",
+      "blocker": "Actual fresh scheduled-agent continuity and unattended dependency permissions unqualified; ordinary constrained stack import failed, approved computation imports passed. Owner scheduling decision still required."
     },
     {
       "id": "CTL-002",
       "priority": 2,
-      "status": "ready",
+      "status": "completed",
       "title": "Audit prior statistical research and data limitations",
-      "acceptance": "document baseline metric, sampling, missingness, Clean lookahead, multiple testing, leakage risks and identification limits locally; report safe status"
+      "acceptance": "document baseline metric, sampling, missingness, Clean lookahead, multiple testing, leakage risks and identification limits locally; report safe status",
+      "evidence": "Private local checkpoint; sanitized operational record in draft PR #1. No detailed research results published."
     },
     {
       "id": "CTL-003",
       "priority": 3,
-      "status": "blocked",
+      "status": "completed",
       "depends_on": [
         "CTL-002"
       ],
       "title": "Pre-register bounded development-period investigations",
-      "acceptance": "freeze hypotheses, time granularity, measures, effect size and stopping criteria without 2026 holdout"
+      "acceptance": "freeze hypotheses, time granularity, measures, effect size and stopping criteria without 2026 holdout",
+      "evidence": "Private local checkpoint; sanitized operational record in draft PR #1. No detailed research results published.",
+      "note": "Separate pre-analysis daily-summary and charter-required intraday robustness protocols on already inspected development data; not fresh confirmation."
     },
     {
       "id": "CTL-004",
       "priority": 4,
-      "status": "blocked",
+      "status": "completed",
       "depends_on": [
         "CTL-003"
       ],
       "title": "Execute bounded academic investigations",
-      "acceptance": "reproducible results with uncertainty and negative findings; retain detailed results locally"
+      "acceptance": "reproducible results with uncertainty and negative findings; retain detailed results locally",
+      "evidence": "Private local checkpoint; sanitized operational record in draft PR #1. No detailed research results published.",
+      "note": "Existing daily summaries plus bounded pre2026 projected prefixes for the new charter's intraday targets. Null/known-effect/leakage fixtures and coverage sensitivity saved locally; no full integrity rescan."
     },
     {
       "id": "CTL-005",
       "priority": 5,
-      "status": "blocked",
+      "status": "completed",
       "depends_on": [
         "CTL-004"
       ],
       "title": "Decide whether simple academic models warrant study",
-      "acceptance": "explicit evidence-based go/no-go; no automatic escalation"
+      "acceptance": "explicit evidence-based go/no-go; no automatic escalation",
+      "evidence": "Private local checkpoint; sanitized operational record in draft PR #1. No detailed research results published.",
+      "decision": "no_go_for_new_predictive_models_on_this_branch"
     },
     {
       "id": "CTL-006",
@@ -59,7 +68,11 @@
         "CTL-005"
       ],
       "title": "Freeze final protocol and request holdout approval",
-      "acceptance": "owner approval; do not access 2026 before approval"
+      "acceptance": "owner approval; do not access 2026 before approval",
+      "note": "Not started; no final evaluation authorized. Holdout remains locked; predictive branch no-go does not justify automatic opening."
     }
-  ]
+  ],
+  "execution_record": "runs/2026-11-27-execution.md",
+  "current_draft_pr": 1,
+  "reconciled_main": "be982cd4df3bff1229a846e7616d7be6f8206d67"
 }
