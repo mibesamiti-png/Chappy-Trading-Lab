@@ -73,6 +73,7 @@
     }
   ],
   "execution_record": "runs/2026-11-27-execution.md",
-  "current_draft_pr": 1,
-  "reconciled_main": "be982cd4df3bff1229a846e7616d7be6f8206d67"
+  "current_draft_pr": null,
+  "reconciled_main": "a2f16d770c0334a5165a62bf7695eee5adca3108",
+  "coordination_note": "PRs #3, #1 and #2 merged; research task/protocol revisions and status unchanged. CTL-001 fresh Work probe pending. No active draft from the previous checkpoint."
 }
