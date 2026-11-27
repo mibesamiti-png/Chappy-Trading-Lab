@@ -5,6 +5,7 @@ on:
     paths:
       - 'legacy/**'
       - 'docs/INTEGRATED_RECOVERY.md'
+      - 'docs/EARLY_SOURCE_INTAKE.md'
       - '.github/workflows/legacy-recovery-audit.yml'
 permissions:
   contents: read
@@ -83,6 +84,23 @@ jobs:
           assert unpinned_seen == unpinned_expected, 'historical exception not exercised'
           print(f'Named source references: {len(edges)}; embedded matching digest: {len(edges)-len(unpinned_seen)}; explicitly unpinned: {len(unpinned_seen)}')
           print('Static source-reference check, not proof of every dynamic runtime dependency.')
+          PY
+      - name: Verify isolated early source archive (no execution)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, re
+          from pathlib import Path
+          root = Path('legacy/early_source_only')
+          rows = re.findall(r'^\\| R(\\d+) \\| ([^|]+) \\| ([a-f0-9]{64}) \\|', Path('docs/EARLY_SOURCE_INTAKE.md').read_text(), re.M)
+          pins = {n.strip(): h for _, n, h in rows}
+          assert len(pins) == len(rows) == 5
+          assert set(pins) == {p.name for p in root.glob('*.py')}
+          for p in sorted(root.glob('*.py')):
+              raw = p.read_bytes()
+              assert hashlib.sha256(raw).hexdigest() == pins[p.name], p.name
+              compile(raw, str(p), 'exec')
+          print(f'Early source-only archive: {len(pins)}/{len(pins)} hashes and syntax; historical pin and runtime not verified')
           PY
       - name: Run reviewed synthetic R68 control
         shell: bash
