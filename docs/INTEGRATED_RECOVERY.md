@@ -159,3 +159,18 @@ All seven source texts match historical Notion code SHA-256. R141 imports R103 a
 | R57 | Chappy_Trading_Dependency_Study_v0.1.py | c1cb74de5f5cd0424ace77d59bf6d0f142bacf0d8155e16b9b4550c70b4db37c |
 
 All twelve source texts match historical Notion code SHA-256. These are synthetic evidence, decision and monitoring studies. R47 retains the original v0.2 filename and static reference matching includes version variants. Literal source references and embedded pins checked before intake. No historical result reports or market inputs imported; not a fresh runtime verification.
+
+## Notion-pinned historical study batch R58–67
+
+| R58 | Chappy_Trading_Recovery_Study_v0.1.py | 17b61371aef926a5ddea0fd894059f90d6d2b3022c252a12057c5d3edd07d70b |
+| R59 | Chappy_Trading_Integration_Study_v0.1.py | b7065be266b27dfd7c923634325e23d1cd61e60b334b95293d06991ce0ceb144 |
+| R60 | Chappy_Trading_Event_Replay_v0.1.py | 1a7fe6066ac887ebab3d5fbd3a717971e8d67a3e5d7fe8b986452823148fa033 |
+| R61 | Chappy_Trading_Durable_Replay_v0.1.py | c35aaefdee534453a8f2c656c317f629a0213ef290b32ce99a1400b175f24312 |
+| R62 | Chappy_Trading_Integrated_Review_v0.1.py | da340996b7f7144fad54462dd0f245ef19b71933f97efa1d1bb22434d64479d5 |
+| R63 | Chappy_Trading_Integrated_Improvement_v0.1.py | fbf899ceb682fc7a99697ce08374a004d350a3a997100dfdeb64b2ae0a74e04e |
+| R64 | Chappy_Trading_Integrated_Calibration_v0.1.py | c37b86847e3465b1a7532f0c1a4e4bcc21d6a9d56cad8b9cc040ab7bdfb66c54 |
+| R65 | Chappy_Trading_Integrated_Monitor_v0.1.py | 66d52f6f177f006a674f184d2d3ce00f31358efd158d81e25d03d61a4d97c982 |
+| R66 | Chappy_Trading_Acceptance_Study_v0.1.py | 6bdf8937ffb371e9d690c55b5876ec2a3a36e18290535dc98e41d2784aa6e3e7 |
+| R67 | Chappy_Trading_Order_Flow_Study_v0.1.py | 24323ecf1df518a3a284519d3b37b6187fcdc76dde06be9055ce29683ff9a10e |
+
+All ten source texts match historical Notion code SHA-256. Literal source references and R59 dynamic PINS entries checked against recovered inventory; static CI includes those dynamic parents. These synthetic studies cover recovery, event replay, durable journals, integrated audits and order-flow observation. No fresh runtime verification or historical data/results imported. R46–154 source stages now have continuous coverage.
