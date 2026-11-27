@@ -28,6 +28,10 @@ This isolated archive preserves original synthetic/paper and known-period explor
 | R40 | Chappy_Trading_Foundation_Audit_v0.1.py | ae7cb18ebd0bcc7aa679b54b3eb92d8add49b1505c694f2e4ec36fe71204df0c |
 | R41 | Chappy_Trading_Baseline_Audit_v0.1.py | 76a89186eba075d5b054afd56f273f18de5013853ace554b80198eab324a91dd |
 
+| R42 | Chappy_Trading_Beta_Audit_v0.1.py | 8fc380d26d008950cb894c05fd7484f387685f43e778dcc4d9f2ae2b6880471a |
+| R43 | Chappy_Trading_Event_Bundle_Study_v0.1.py | 48d1d0700af1e041274eeca696b0ca36ac8063bc987d9ce0b58b744a368c0df9 |
+| R44 | Chappy_Trading_Cross_Sector_Study_v0.1.py | 55bee275d1172631169a33489a392fa4d4ed7de90f482e0000ad6b45906cd786 |
+
 ## Open dependencies
 
 - R12: direct LongShort dependency now archived; transitive Research Lab v0.5.0 and RC1 remain absent. No runtime closure.
@@ -42,3 +46,7 @@ R11 and R19–22 are archived as source only. The early R11 Opportunity Study is
 ## R37–41 follow-up
 
 Five retrospective diagnostic and audit sources archived without input tables or report files. Historical cohort identifiers, date windows and protection hashes retained as original configuration. No embedded quote or consensus tables imported. Prior R26 and other input/report dependencies remain unavailable in this public archive; no runtime or historical pin verification claimed.
+
+## R42–44 follow-up
+
+Three retrospective audit and diagnostic sources archived; historical cohort IDs, dates and protection hashes are source configuration. All external price, event, consensus and report tables remain excluded. Runtime dependencies and original historical source pins remain unverified. No study execution or prospective-data access performed.
