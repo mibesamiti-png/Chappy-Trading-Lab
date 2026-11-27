@@ -32,6 +32,13 @@ This isolated archive preserves original synthetic/paper and known-period explor
 | R43 | Chappy_Trading_Event_Bundle_Study_v0.1.py | 48d1d0700af1e041274eeca696b0ca36ac8063bc987d9ce0b58b744a368c0df9 |
 | R44 | Chappy_Trading_Cross_Sector_Study_v0.1.py | 55bee275d1172631169a33489a392fa4d4ed7de90f482e0000ad6b45906cd786 |
 
+| R27 | Chappy_Trading_Evidence_Gate_v0.1.py | dbc4c1aaccb1087564d8445c0028c65ef6cb0a62b6c52e40b60378e4d3296529 |
+| R28 | Chappy_Trading_Evidence_Journal_v0.1.py | 559c53be8a9949b24e3bda98d168261a6503c1fb8c6306aaa74635ab86281681 |
+| R29 | Chappy_Trading_Ingest_Study_v0.1.py | a273da905eaca291f88a5c855c3fa54df29949f515c044c0933a51ccdb248a22 |
+| R33 | Chappy_Trading_Review_Workflow_v0.1.py | 85335aa15d8ed42e0decfbd0df9b9349bee0fa9d415a32e71ca837af7b7c1dfb |
+| R34 | Chappy_Trading_Document_Integration_v0.1.py | 2f968e96e4294d7251742c812515c571ab0a117d43e8466f6a6544abd1c4c216 |
+| R35 | Chappy_Trading_Adoption_Gate_v0.1.py | 8370b30faf818c6da415d0285bee4fd7a57c004a2f5ef86cc405cf9bbf89f398 |
+
 ## Open dependencies
 
 - R12: direct LongShort dependency now archived; transitive Research Lab v0.5.0 and RC1 remain absent. No runtime closure.
@@ -50,3 +57,7 @@ Five retrospective diagnostic and audit sources archived without input tables or
 ## R42–44 follow-up
 
 Three retrospective audit and diagnostic sources archived; historical cohort IDs, dates and protection hashes are source configuration. All external price, event, consensus and report tables remain excluded. Runtime dependencies and original historical source pins remain unverified. No study execution or prospective-data access performed.
+
+## R27–29 and R33–35 follow-up
+
+Six evidence-processing sources archived after separating source from external historical reports. They retain references to protected artifacts and intentionally incomplete dependencies; no source containing manually transcribed corporate figures/excerpts (R30–32) or historical data files was imported. R36 is deferred for further scope review. R29 contains an explicit optional HTTPS capture function and loopback fixture; no network collection or execution performed. These six remain syntax/hash-only, not validated runtime closure. The base Research Lab v0.5.0 and RC1 are located in the library, but remain outside public recovery to avoid disclosing fixed prospective-test settings or importing unreviewed protected code. The existing protected prospective protocol and Work track are unchanged.
