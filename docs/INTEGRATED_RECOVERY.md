@@ -142,3 +142,20 @@ All eight source texts match historical Notion code SHA-256. Literal dependency 
 | R147 | Chappy_Trading_Core_Evidence_Diagnostic_v0.1.py | 9abe16057d93b459e152304500786cc97b107155c7e06d7fa1820dbfc59cde9a |
 
 All seven source texts match historical Notion code SHA-256. R141 imports R103 and R142 imports R141 by filename, computing a source digest in the plan rather than enforcing a fixed embedded pin; their archived source bytes are independently checked. No historical code was changed to retrofit a pin. R143 also requires the previous R142 examples JSON for its full diagnostic; it was not imported. Static CI now includes the known dynamic PARENTS dictionaries in R127, R128 and R139. No new runtime tests or market data imported.
+
+## Notion-pinned historical study batch R46–57
+
+| R46 | Chappy_Trading_Decision_Quality_v0.1.py | b2952badec244af25d16d1bbb785cdd5efc43f2c1ffe28e687fbfd465b5c371a |
+| R47 | Chappy_Trading_Decision_Quality_v0.2.py | 4b3c220610f54ab0a764dcbc4d27e8809a9c19ebf8d358e7cad5ac116b4e390c |
+| R48 | Chappy_Trading_Decision_Journal_v0.1.py | 738f38920519d81fbb7fe3df303bea41ab39bb7172aae8e55f93e4588cbe54a8 |
+| R49 | Chappy_Trading_Decision_Review_v0.1.py | 44e204330a9c363f8985e75e0036034a61312793f79b82e59e46cf9292463d88 |
+| R50 | Chappy_Trading_Improvement_Study_v0.1.py | f93e62fa2dcbd88fed46e8c80e833b3d91dd5539332b70213ecb032e52e11512 |
+| R51 | Chappy_Trading_Portfolio_Decision_v0.1.py | c33f248e8122b7a59b6e663e5c009d2988780878d38fbf0f07f3081f0608456c |
+| R52 | Chappy_Trading_Portfolio_Stress_v0.1.py | 29524882a9e0cd87fbf634b3b486ae5a27b80c5242b50738aa94ae6960333d2f |
+| R53 | Chappy_Trading_Calibration_Study_v0.1.py | 9d1e42d1e218a2d9f98bab128cfcebbd205b6629911835620800476d1f6d65be |
+| R54 | Chappy_Trading_Sequential_Monitor_v0.1.py | 8a5213b3869ad5686b3fe8d22f0318d01ac7a90ada03cdee7ad1c7a4521e37f2 |
+| R55 | Chappy_Trading_Alarm_Study_v0.1.py | 97f2f063d1b74af6f3365b55f34b7df66c257d6eed8ea49cb8cf632e05ab9876 |
+| R56 | Chappy_Trading_Multi_Monitor_v0.1.py | ba1b7346676f5c46ae4ebfe22da6500c74b89004315fd59d38bc0fbafcada893 |
+| R57 | Chappy_Trading_Dependency_Study_v0.1.py | c1cb74de5f5cd0424ace77d59bf6d0f142bacf0d8155e16b9b4550c70b4db37c |
+
+All twelve source texts match historical Notion code SHA-256. These are synthetic evidence, decision and monitoring studies. R47 retains the original v0.2 filename and static reference matching includes version variants. Literal source references and embedded pins checked before intake. No historical result reports or market inputs imported; not a fresh runtime verification.
