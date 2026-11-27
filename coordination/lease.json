@@ -1,12 +1,11 @@
 {
   "schema_version": 1,
-  "status": "active",
-  "owner": "ctl-20261127-pr6",
-  "claim_pr": 6,
-  "task_ids": [
-    "CTL-001"
-  ],
-  "started_utc": "2026-11-27T10:11:32Z",
-  "expires_utc": "2026-11-27T10:31:32Z",
-  "scope": "Original-session read-only environment diagnosis; no research or scheduling"
+  "status": "idle",
+  "owner": null,
+  "task_ids": [],
+  "expires_utc": null,
+  "last_owner": "ctl-20261127-pr6",
+  "last_claim_pr": 6,
+  "released_utc": "2026-11-27T10:15:57Z",
+  "last_test": "CTL-001 original-session acquisition/release probe; no research"
 }
