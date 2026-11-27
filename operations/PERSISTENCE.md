@@ -21,12 +21,12 @@ The candidate local checkout has an ignored `.local/registry.json` containing re
 
 ## Before enabling an approximately five-hour cadence
 
-1. Review/merge operational changes through the maintainer; do not write main directly.
-2. Select the intended local execution surface and confirm its private registry and tool access from an actual fresh agent run.
+1. Operational changes were merged with owner approval at `a2f16d770c0334a5165a62bf7695eee5adca3108`; use current main. Chat independently reproduced 10/10 original operational tests at PR #1 head. This does not establish combined-main CI or fresh-agent access.
+2. Select the intended local execution surface and perform the bounded fresh manual Work probe in [HANDOFF](../HANDOFF.md). Confirm existing registry, checkpoint, required dependency imports and permissions; do not recreate missing inputs or read protected observations.
 3. Confirm access to existing artifacts and checkpoints without rescanning market data. Publish only pass/fail/unverified status.
 4. Acquire the repository-wide lease and local guard before any computation; skip completed task/revision identifiers. Follow `LEASE_PROTOCOL.md`.
 5. Use a bounded per-invocation budget and safe checkpoints; do not infer allowance resets from the interval.
-6. Only after the persistence probe and owner scheduling decision, create scheduling through the native automation action. A true five-hour interval must continue across day boundaries; a set of five wall-clock hours per day is not equivalent.
+6. Only after the manual persistence probe passes and the owner makes a separate scheduling decision, use the native automation action for a bounded unattended environment probe before enabling research. A manual pass is not unattended readiness. A true five-hour interval must continue across day boundaries; a set of five wall-clock hours per day is not equivalent.
 7. Inspect early real runs for delayed triggers, missed access, overlap and checkpoint recovery. Do not call a schedule reliable before those observations exist.
 
 Official documentation states local-file tasks need the computer on and desktop app running; web tasks cannot directly work in a local folder. This is a prerequisite, not evidence that this particular installation has passed an overnight/restart test. See [Scheduled tasks](https://learn.chatgpt.com/docs/automations?surface=app).
