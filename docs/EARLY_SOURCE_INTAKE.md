@@ -16,9 +16,19 @@ This isolated archive preserves original synthetic/paper and known-period explor
 | R9 | Chappy_Trading_LongShort_Study_v0.1.py | f7bc79e6a3265249c560e2d94cbf03fa1f236896f0fc3d5f4d2b250cc42014ab |
 | R10 | Chappy_Trading_Short_Study_v0.1.py | d567367e7cbffc510573c29880891d7d9c2879bafb6782a96cc6edde925d4109 |
 
+| R11 | Chappy_Trading_Opportunity_Study_v0.1.py | d9ac2e3ce53ded9558a13e01c74ce8f18174097b71690632e082d2318025f5a9 |
+| R19 | Chappy_Trading_Market_Replay_v0.1.py | 4672d83434fea2918ecdcaadef9d48b760dad0cdcc1d4316d888793ef4d3873a |
+| R20 | Chappy_Trading_Latency_Study_v0.1.py | 55f5b982466e73952339d5fc56a9d63b0b6c382b2cabfc7202ef571fee651315 |
+| R21 | Chappy_Trading_History_Study_v0.1.py | 255ffc5a8b48a9a30268419208f5462e42d1ad8657bd82cec68db0a0fc074220 |
+| R22 | Chappy_Trading_Regime_Study_v0.1.py | 98e32c42c71e308c9d9b6ec88a5466f0e6f325a1fdaa9ce8227d13e449843b64 |
+
 ## Open dependencies
 
 - R12: direct LongShort dependency now archived; transitive Research Lab v0.5.0 and RC1 remain absent. No runtime closure.
 - R18: Chappy_Trading_Pipeline_Study_v0.2.py not recovered into this directory.
 
 R6–10 source-only recovery completed after source inspection: known-period algorithms and synthetic helpers, no external market archive or historical result imported. Frozen historical file digests and development cutoffs are preserved, not authority to execute. R17 Pipeline v0.2 source not located in exact-name search; monitor distribution may contain it. R16/17 packages remain uninspected. R27–36 evidence/document sources located; R27–29 require old protected artifacts and R30–31 contain historical corporate excerpts. Keep those outside public source recovery pending rights and provenance review. R32 contains a historical corporate excerpt; R33–36 depend on old document/evidence reports and protected artifacts. Their source was inspected but remains deferred pending separate publication review. R1–11 and remaining R19–45 require targeted inventory and review. Do not claim complete runtime coverage from syntax checks.
+
+## R11 and R19–22 follow-up
+
+R11 and R19–22 are archived as source only. The early R11 Opportunity Study is a distinct file from the synthetic R78 file of the same basename; they remain in separate directories. No historical price archive, daily CSV, saved research outputs or protected RC1/plan artifacts were imported. The replay chain needs missing Pipeline v0.2 and legacy Research Lab/RC1 as well as prior report files; no runtime closure is asserted. R23 and R25 contain historical event/news annotations; R26 embeds historical consensus/financial numbers and an optional network collector. R24 depends on the R23 event records. These four are deferred pending data-rights and publication review; the research-method index is retained. No real-data execution or prospective access performed.
