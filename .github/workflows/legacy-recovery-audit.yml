@@ -94,7 +94,7 @@ jobs:
           root = Path('legacy/early_source_only')
           rows = re.findall(r'^\| R(\d+) \| ([^|]+) \| ([a-f0-9]{64}) \|', Path('docs/EARLY_SOURCE_INTAKE.md').read_text(), re.M)
           pins = {n.strip(): h for _, n, h in rows}
-          assert len(pins) == len(rows) == 5
+          assert len(pins) == len(rows) == 10
           assert set(pins) == {p.name for p in root.glob('*.py')}
           for p in sorted(root.glob('*.py')):
               raw = p.read_bytes()
