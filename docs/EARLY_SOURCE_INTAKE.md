@@ -22,6 +22,12 @@ This isolated archive preserves original synthetic/paper and known-period explor
 | R21 | Chappy_Trading_History_Study_v0.1.py | 255ffc5a8b48a9a30268419208f5462e42d1ad8657bd82cec68db0a0fc074220 |
 | R22 | Chappy_Trading_Regime_Study_v0.1.py | 98e32c42c71e308c9d9b6ec88a5466f0e6f325a1fdaa9ce8227d13e449843b64 |
 
+| R37 | Chappy_Trading_Daily_Event_Study_v0.1.py | ceb20fc23112560b567b3183444d21cd2155efecb2478a84626fced5a583d839 |
+| R38 | Chappy_Trading_Market_Context_Study_v0.1.py | 6559eaf2891a43b23f5652cbf9d82e27008d6a5b474b10e2ddb2108cdfafe5a1 |
+| R39 | Chappy_Trading_Peer_Context_Study_v0.1.py | 54b2fd5a91e1ad0d4a15f80a221419004438229e89c31b9bdb1530b4c4a72262 |
+| R40 | Chappy_Trading_Foundation_Audit_v0.1.py | ae7cb18ebd0bcc7aa679b54b3eb92d8add49b1505c694f2e4ec36fe71204df0c |
+| R41 | Chappy_Trading_Baseline_Audit_v0.1.py | 76a89186eba075d5b054afd56f273f18de5013853ace554b80198eab324a91dd |
+
 ## Open dependencies
 
 - R12: direct LongShort dependency now archived; transitive Research Lab v0.5.0 and RC1 remain absent. No runtime closure.
@@ -32,3 +38,7 @@ R6–10 source-only recovery completed after source inspection: known-period alg
 ## R11 and R19–22 follow-up
 
 R11 and R19–22 are archived as source only. The early R11 Opportunity Study is a distinct file from the synthetic R78 file of the same basename; they remain in separate directories. No historical price archive, daily CSV, saved research outputs or protected RC1/plan artifacts were imported. The replay chain needs missing Pipeline v0.2 and legacy Research Lab/RC1 as well as prior report files; no runtime closure is asserted. R23 and R25 contain historical event/news annotations; R26 embeds historical consensus/financial numbers and an optional network collector. R24 depends on the R23 event records. These four are deferred pending data-rights and publication review; the research-method index is retained. No real-data execution or prospective access performed.
+
+## R37–41 follow-up
+
+Five retrospective diagnostic and audit sources archived without input tables or report files. Historical cohort identifiers, date windows and protection hashes retained as original configuration. No embedded quote or consensus tables imported. Prior R26 and other input/report dependencies remain unavailable in this public archive; no runtime or historical pin verification claimed.
