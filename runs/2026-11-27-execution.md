@@ -23,3 +23,12 @@ No machine learning, new data source, live trading, final-holdout evaluation or 
 ## Stopping condition and next run
 
 The remaining tasks require an actual fresh-agent persistence probe or owner-controlled decisions. Spare budget is not authorization to open 2026 or invent a new branch. See HANDOFF and operations/PERSISTENCE for the exact acceptance gap. Main remains unchanged until maintainer review; the run's shared lease is released only after status has been saved.
+
+
+## CTL-001 original-session diagnostic claim (2026-11-27 JST)
+
+Owner-directed environment verification only, following current main and PR #4 HANDOFF and the failed separate-session record in PR #5. This invocation is in the original research conversation, not a new independent Work environment. It must not be presented as passing the separate-session acceptance gate.
+
+Budget: at most 20 minutes. Read existing registry/input/artifact/checkpoint metadata; inspect Python imports, completed revisions and checkpoint interpretation. Exercise only coordination lease/guard acquisition and release. No research rerun, download, data move/delete, holdout observations, broad permission grant or schedule setup. Public evidence will contain operational status only; private storage locations remain outside GitHub.
+
+Prior PR #5 records a blocked probe rather than an active execution; PR #4 is preparation. The shared lease was idle at this claim. Stop for any new conflicting writer or failed required access. Keep previous research checkpoint contents and completed-task revisions intact.
