@@ -15,6 +15,8 @@ import importlib.util
 import subprocess
 import threading
 import queue
+import time
+from app_version import VERSION
 from tkinter import messagebox
 from pathlib import Path
 import tkinter as tk
@@ -1246,7 +1248,7 @@ def quality_select(rows,identities,monthly,count,seed,min_months,min_bps):
             'eligible_count':len(eligible),'selected':selected,'selection_plan':plan}
 
 
-def quality_index_run(parent,count,seed,min_months,min_bps):
+def quality_index_run(parent,count,seed,min_months,min_bps,persist=True):
     parent=local_folder(str(parent))
     with (parent/'existing_index_column_map.local.json').open('rb') as f:
         raw=f.read(INDEX_MAP_LIMIT+1)
@@ -1273,12 +1275,125 @@ def quality_index_run(parent,count,seed,min_months,min_bps):
     payload=json.dumps(receipt,ensure_ascii=False,sort_keys=True).encode('utf-8')
     if len(payload)>QUALITY_RECEIPT_LIMIT:
         raise ValueError('QUALITY_RECEIPT_LIMIT')
+    if not persist:
+        return receipt
     dest=parent/'market_monthly_quality_selection.local.json'
     atomic(dest,payload)
     with dest.open('rb') as f:
         if f.read(QUALITY_RECEIPT_LIMIT+1)!=payload:
             raise ValueError('QUALITY_RECEIPT_MISMATCH')
     return receipt
+
+
+# A fixed, local acceptance suite once per installed release.
+DIAG_FILE='runner_diagnostics.local.json'
+DIAG_LIMIT=16384
+DIAG_STEPS=(('zip','人工ZIP・期間制限'),('parquet','既存Parquet環境'),
+            ('ohlcv','人工OHLCV'),('aggregation','人工集計'),
+            ('checkpoint','人工研究チェックポイント'),
+            ('catalog','保存済みZIP目録・現行ファイル属性'),
+            ('quality','保存済み月別選択の再現確認'))
+DIAG_CODES=('PASS','SKIP_NOT_CONFIGURED','FAIL_TIMEOUT','FAIL_IO','FAIL_VALIDATION','FAIL_REPRODUCIBILITY','FAIL_INTERNAL')
+
+
+def diagnostic_quality(parent):
+    with (parent/'market_monthly_quality_selection.local.json').open('rb') as f:
+        raw=f.read(QUALITY_RECEIPT_LIMIT+1)
+    if len(raw)>QUALITY_RECEIPT_LIMIT:
+        raise ValueError('DIAG_QUALITY_LIMIT')
+    saved=json.loads(raw)
+    if (type(saved) is not dict or saved.get('schema')!=1 or
+            saved.get('scope')!='LOCAL_RETROSPECTIVE_MONTHLY_SELECTION' or
+            saved.get('research_access')!='LOCKED' or saved.get('market_member_reads')!=0):
+        raise ValueError('DIAG_QUALITY_RECEIPT')
+    actual=quality_index_run(parent,saved['requested_count'],saved['seed'],saved['min_months'],saved['min_coverage_bps'],persist=False)
+    if actual!=saved:
+        raise ValueError('DIAG_REPRODUCIBILITY')
+
+
+def diagnostic_read(parent,version):
+    try:
+        with (parent/DIAG_FILE).open('rb') as f:
+            raw=f.read(DIAG_LIMIT+1)
+    except FileNotFoundError:
+        return None
+    if len(raw)>DIAG_LIMIT:
+        raise ValueError('DIAG_LIMIT')
+    report=json.loads(raw)
+    if (type(report) is not dict or report.get('schema')!=1 or
+            report.get('scope')!='LOCAL_DEBUG_ONLY' or report.get('market_member_reads')!=0 or
+            report.get('research_access')!='LOCKED'):
+        raise ValueError('DIAG_SCHEMA')
+    if report.get('version')!=version:
+        return None
+    rows=report.get('steps')
+    if type(rows) is not list or len(rows)!=len(DIAG_STEPS):
+        raise ValueError('DIAG_SCHEMA')
+    for row,(key,_) in zip(rows,DIAG_STEPS):
+        if (type(row) is not dict or set(row)!={'key','status','ms'} or row['key']!=key or
+                row['status'] not in DIAG_CODES or type(row['ms']) is not int or not 0<=row['ms']<=86400000):
+            raise ValueError('DIAG_SCHEMA')
+    return report
+
+
+def diagnostic_text(report):
+    # Render only fixed labels, enumerated codes and numeric timings.
+    lines=['Chappy Trading Lab '+report['version']+' 自動デバッグ報告',
+           '市場ZIP本体未読 / 2026年評価なし / 研究実行ロック中']
+    for row,(_,label) in zip(report['steps'],DIAG_STEPS):
+        lines.append(f"{label}: {row['status']} ({row['ms']/1000:.2f}秒)")
+    lines.append(f"成功 {sum(r['status']=='PASS' for r in report['steps'])}/{len(DIAG_STEPS)} / 未設定 {sum(r['status']=='SKIP_NOT_CONFIGURED' for r in report['steps'])}")
+    return '\n'.join(lines)
+
+
+def diagnostic_run(parent,version,notify=lambda *_:None):
+    parent=local_folder(str(parent))
+    def check_checkpoint():
+        if not (parent/SYNTH_RUN_FILE).is_file():
+            raise FileNotFoundError()
+        if synthetic_run_read(parent)['status']!='COMPLETE':
+            raise ValueError('DIAG_CHECKPOINT_INCOMPLETE')
+    actions={
+        'zip':lambda:synthetic_probe_checkpoint(parent/'synthetic_zip_probe.local.json'),
+        'parquet':lambda:parquet_runtime(parent,False),
+        'ohlcv':lambda:synthetic_ohlcv_checkpoint(parent),
+        'aggregation':synthetic_aggregation,
+        'checkpoint':check_checkpoint,
+        'catalog':lambda:load_market_candidates(parent),
+        'quality':lambda:diagnostic_quality(parent),
+    }
+    rows=[]
+    for key,label in DIAG_STEPS:
+        notify(label)
+        start=time.monotonic()
+        status='PASS'
+        try:
+            # Missing optional artifacts are not counted as success.
+            if key in ('parquet','ohlcv') and not (parent/'ctl_pyarrow_26_0_1').is_dir():
+                raise FileNotFoundError()
+            if key=='catalog' and not (parent/'market_zip_catalog.local.json').is_file():
+                raise FileNotFoundError()
+            if key=='quality' and not (parent/'market_monthly_quality_selection.local.json').is_file():
+                raise FileNotFoundError()
+            actions[key]()
+        except FileNotFoundError:
+            status='SKIP_NOT_CONFIGURED' if key in ('parquet','ohlcv','checkpoint','catalog','quality') else 'FAIL_IO'
+        except subprocess.TimeoutExpired:
+            status='FAIL_TIMEOUT'
+        except (OSError,subprocess.CalledProcessError):
+            status='FAIL_IO'
+        except (ValueError,sqlite3.Error,TypeError,KeyError,AttributeError,RecursionError) as exc:
+            status='FAIL_REPRODUCIBILITY' if str(exc)=='DIAG_REPRODUCIBILITY' else 'FAIL_VALIDATION'
+        except Exception:
+            status='FAIL_INTERNAL'
+        rows.append({'key':key,'status':status,'ms':max(0,int((time.monotonic()-start)*1000))})
+    report={'schema':1,'scope':'LOCAL_DEBUG_ONLY','version':version,
+            'market_member_reads':0,'research_access':'LOCKED','steps':rows}
+    raw=json.dumps(report,sort_keys=True).encode('utf-8')
+    atomic(parent/DIAG_FILE,raw)
+    if diagnostic_read(parent,version)!=report:
+        raise ValueError('DIAG_SAVE_FAILED')
+    return report
 
 
 class DataDesktop(UpdateDesktop):
@@ -1303,6 +1418,95 @@ class DataDesktop(UpdateDesktop):
         self.selection_btn.pack(side='left', padx=3)
         self.synthetic_run_btn = ttk.Button(self.link_btn.master, text='人工研究実行', command=self.run_synthetic_research)
         self.synthetic_run_btn.pack(side='left', padx=3)
+        self.diag_results=queue.Queue()
+        self.diag_btn=ttk.Button(self.link_btn.master,text='デバッグ報告',command=self.open_diagnostics)
+        self.diag_btn.pack(side='right',padx=3)
+        self.root.after(800,self.auto_diagnostics)
+
+    def auto_diagnostics(self):
+        if self.closing:
+            return
+        if self.folder_dialog is not None or self.parquet_busy or self.catalog_busy:
+            self.root.after(1000,self.auto_diagnostics)
+            return
+        try:
+            if diagnostic_read(Path(self.path).parent,VERSION) is not None:
+                return
+        except (OSError,ValueError,TypeError,KeyError,RecursionError):
+            self.log('旧デバッグ報告を検証できません。今回の検査を実施します。')
+        self.start_diagnostics()
+
+    def start_diagnostics(self):
+        if self.closing or self.parquet_busy or self.catalog_busy or self.folder_dialog is not None:
+            return
+        self.parquet_busy=True
+        self.diag_btn.configure(state='disabled')
+        parent=Path(self.path).parent
+        self.log('バージョン '+VERSION+' の自動デバッグ開始。')
+        def run():
+            try:
+                result=diagnostic_run(parent,VERSION,lambda label:self.diag_results.put(('progress',label)))
+                self.diag_results.put(('done',result))
+            except Exception:
+                self.diag_results.put(('failed',None))
+        threading.Thread(target=run,daemon=False).start()
+        self.root.after(200,self.poll_diagnostics)
+
+    def copy_diagnostics(self,report):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(diagnostic_text(report))
+
+    def poll_diagnostics(self):
+        while True:
+            try:
+                kind,result=self.diag_results.get_nowait()
+            except queue.Empty:
+                self.root.after(200,self.poll_diagnostics)
+                return
+            if kind=='progress':
+                self.log('自動デバッグ：'+result)
+                continue
+            self.parquet_busy=False
+            self.diag_btn.configure(state='normal')
+            if kind=='done':
+                self.log('自動デバッグ終了。報告をPC内に保存しました。')
+                try:
+                    self.copy_diagnostics(result)
+                    self.log('報告をクリップボードにコピーしました。チャットへ貼り付けできます。')
+                except tk.TclError:
+                    self.log('自動コピーできませんでした。デバッグ報告からコピーできます。')
+            else:
+                self.log('自動デバッグ報告の保存に失敗しました。')
+            return
+
+    def open_diagnostics(self):
+        if self.closing or self.parquet_busy or self.catalog_busy or self.folder_dialog is not None:
+            return
+        try:
+            report=diagnostic_read(Path(self.path).parent,VERSION)
+        except (OSError,ValueError,TypeError,KeyError,RecursionError):
+            report=None
+        if report is None:
+            self.start_diagnostics()
+            return
+        win=tk.Toplevel(self.root)
+        self.folder_dialog=win
+        win.title('自動デバッグ報告')
+        win.transient(self.root)
+        pane=ttk.Frame(win,padding=12)
+        pane.pack(fill='both',expand=True)
+        ttk.Label(pane,text=diagnostic_text(report),justify='left').pack(anchor='w',pady=8)
+        def close():
+            self.folder_dialog=None
+            win.destroy()
+        def rerun():
+            close()
+            self.start_diagnostics()
+        ttk.Button(pane,text='コピー',command=lambda:self.copy_diagnostics(report)).pack(side='left')
+        ttk.Button(pane,text='再検査',command=rerun).pack(side='left',padx=5)
+        ttk.Button(pane,text='閉じる',command=close).pack(side='right')
+        win.protocol('WM_DELETE_WINDOW',close)
+        win.grab_set()
 
     def open_market_selection(self):
         if self.closing or self.catalog_busy or self.parquet_busy or self.folder_dialog is not None:
