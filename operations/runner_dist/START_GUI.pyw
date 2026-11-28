@@ -44,14 +44,21 @@ ZIP_LIMIT = 32
 SETTINGS_LIMIT = 32768
 
 
-def local_folder(value):
+def drive_allowed(kind, allow_removable=False):
+    return kind == 3 or (allow_removable and kind == 2)
+
+
+def local_folder(value, allow_removable=False):
     p = Path(value)
     if not p.is_absolute() or '..' in p.parts or str(p).startswith(('\\\\', '//')):
         raise ValueError('LOCAL_FOLDER_REQUIRED')
     if os.name == 'nt':
         import ctypes
-        if ctypes.windll.kernel32.GetDriveTypeW(str(p.anchor)) != 3:
-            raise ValueError('FIXED_DRIVE_REQUIRED')
+        get_drive_type = ctypes.windll.kernel32.GetDriveTypeW
+        get_drive_type.argtypes = [ctypes.c_wchar_p]
+        get_drive_type.restype = ctypes.c_uint
+        if not drive_allowed(get_drive_type(str(p.anchor)), allow_removable):
+            raise ValueError('LOCAL_DRIVE_REQUIRED' if allow_removable else 'FIXED_DRIVE_REQUIRED')
     for part in p.parts:
         if re.search(r'(^2026$|^2026[_-](?:holdout|test)|holdout|封印)', part, re.I):
             raise ValueError('HOLDOUT_FOLDER_REFUSED')
@@ -70,11 +77,35 @@ def local_zip(value):
         raise ValueError('LOCAL_ZIP_REQUIRED')
     if re.search(r'2026|holdout|封印', p.name, re.I):
         raise ValueError('HOLDOUT_ZIP_REFUSED')
-    local_folder(str(p.parent))
+    local_folder(str(p.parent), allow_removable=True)
     info = p.lstat()
     if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
         raise ValueError('REGULAR_ZIP_REQUIRED')
     return p
+
+
+def registration_error(exc):
+    if isinstance(exc, FileNotFoundError):
+        return 'ファイルまたは親フォルダが見つかりません。'
+    if isinstance(exc, PermissionError):
+        return 'ファイルまたは親フォルダの参照権限がありません。'
+    if isinstance(exc, OSError):
+        return 'ファイル属性を取得できません。ドライブの接続状態を確認してください。'
+    messages = {
+        'ZIP_PATH_REQUIRED': 'ZIPのパスが空か長すぎます。',
+        'LOCAL_ZIP_REQUIRED': '絶対パスの.zipファイルを選択してください。',
+        'LOCAL_FOLDER_REQUIRED': 'ネットワークパスや相対パスは登録できません。',
+        'LOCAL_DRIVE_REQUIRED': 'ローカルの固定・リムーバブルドライブを選択してください。',
+        'FIXED_DRIVE_REQUIRED': 'フォルダはローカルの固定ドライブを選択してください。',
+        'HOLDOUT_ZIP_REFUSED': 'ZIP名が封印データの除外条件（2026、holdout、封印）に該当しました。',
+        'HOLDOUT_FOLDER_REFUSED': '親フォルダ名が封印データの除外条件に該当しました。',
+        'DIRECTORY_OR_REPARSE_REFUSED': '親フォルダにリンク、ジャンクション、クラウド等の再解析ポイントがあります。',
+        'REGULAR_ZIP_REQUIRED': '通常のファイルではないか、リンク等の再解析ポイントです。',
+        'ZIP_LIMIT': 'ZIPの登録上限は32件です。',
+        'ZIP_LIMIT_OR_SCHEMA': 'ZIPの登録上限または設定形式が不正です。',
+        'SETTINGS_LIMIT': '設定ファイルのサイズ上限を超えました。',
+    }
+    return messages.get(str(exc), '登録条件を満たしていません。')
 
 
 def zip_paths(values):
@@ -198,8 +229,8 @@ class DataDesktop(UpdateDesktop):
                         combined.append(p)
                 if len(combined) > ZIP_LIMIT:
                     raise ValueError('ZIP_LIMIT')
-            except (OSError, ValueError):
-                output.set('追加できません。通常のローカルZIPを最大32件選択してください。封印データは登録できません。')
+            except (OSError, ValueError) as exc:
+                output.set('追加できません：' + registration_error(exc))
                 return
             zip_list.delete(0, 'end')
             for value in combined:
@@ -238,8 +269,8 @@ class DataDesktop(UpdateDesktop):
                 if folders.get('market_zips'):
                     lines.append('登録ZIP: ' + str(len(folders['market_zips'])) + '件（内容未読）')
                 output.set('\n'.join(lines) or '保存場所未指定')
-            except (OSError, ValueError):
-                output.set('確認できません。ローカルの通常フォルダまたはZIPを選択してください。')
+            except (OSError, ValueError) as exc:
+                output.set('確認できません：' + registration_error(exc))
         def close():
             self.folder_dialog = None
             dialog.destroy()
@@ -250,8 +281,8 @@ class DataDesktop(UpdateDesktop):
                 if len(raw) > SETTINGS_LIMIT:
                     raise ValueError('SETTINGS_LIMIT')
                 atomic(config, raw)
-            except (OSError, ValueError, UnicodeError):
-                output.set('保存できません。通常のローカルフォルダまたはZIPを選択してください。')
+            except (OSError, ValueError, UnicodeError) as exc:
+                output.set('保存できません：' + registration_error(exc))
                 return
             self.log('研究データ設定をPC内に保存しました。実データ未読。')
             close()
