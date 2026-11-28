@@ -626,6 +626,53 @@ def save_market_selection(parent, catalog_hash, selected):
     return len(keys)
 
 
+def auto_market_batch(rows, mode, count, seed, batch_index):
+    """Metadata-only selection, reproducible across input order and Python versions."""
+    if mode not in ('seeded', 'sequential') or type(count) is not int or not 1 <= count <= SELECTION_MAX:
+        raise ValueError('AUTO_SELECTION_POLICY')
+    if type(seed) is not int or not 0 <= seed < 2**64 or type(batch_index) is not int or batch_index < 0:
+        raise ValueError('AUTO_SELECTION_RANGE')
+    if not rows or len(rows) > CATALOG_MAX_TOTAL_ENTRIES:
+        raise ValueError('AUTO_SELECTION_EMPTY')
+    keys = [(r['archive_index'], r['member']) for r in rows]
+    if len(set(keys)) != len(keys):
+        raise ValueError('AUTO_SELECTION_DUPLICATE')
+    def key(r):
+        return (r['archive_index'], r['member'])
+    def rank(r):
+        encoded = json.dumps([seed, *key(r)], ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+        return (hashlib.sha256(encoded).digest(), key(r))
+    order = sorted(rows, key=rank if mode == 'seeded' else key)
+    start = batch_index * count
+    if start >= len(order):
+        raise ValueError('AUTO_SELECTION_END')
+    selected = order[start:start+count]
+    plan = {'algorithm': 'sha256-rank-v1' if mode == 'seeded' else 'archive-member-order-v1',
+            'mode': mode, 'seed': seed if mode == 'seeded' else 0,
+            'batch_size': count, 'batch_index': batch_index,
+            'universe_size': len(order), 'selected_count': len(selected),
+            'next_batch': batch_index+1 if start+count < len(order) else None,
+            'reason': 'PRECOMMITTED_METADATA_SAMPLE' if mode == 'seeded' else 'ORDERED_METADATA_COVERAGE'}
+    return selected, plan
+
+
+def save_auto_market_batch(parent, catalog_hash, mode, count, seed, batch_index):
+    current_hash, rows = load_market_candidates(parent)
+    if current_hash != catalog_hash:
+        raise ValueError('SELECTION_CATALOG_STALE')
+    selected, plan = auto_market_batch(rows, mode, count, seed, batch_index)
+    receipt = {'schema': 1, 'catalog_sha256': current_hash,
+               'scope': 'LOCAL_SELECTION_ONLY', 'research_access': 'LOCKED',
+               'member_reads': 0, 'selected': selected, 'selection_plan': plan}
+    raw = json.dumps(receipt, ensure_ascii=False, sort_keys=True).encode('utf-8')
+    dest = parent / 'market_auto_selection.local.json'
+    atomic(dest, raw)
+    with dest.open('rb') as f:
+        if f.read(len(raw)+1) != raw:
+            raise ValueError('SELECTION_RECEIPT_MISMATCH')
+    return plan
+
+
 OHLCV_WORKER = r'''
 import io, json, zipfile, time
 from datetime import datetime, timezone, timedelta
@@ -810,7 +857,43 @@ class DataDesktop(UpdateDesktop):
             dialog.destroy()
         ttk.Label(panel,textvariable=status).pack(anchor='w',pady=6)
         ttk.Button(panel,text='選択を保存',command=save).pack(side='left')
+        ttk.Button(panel,text='自動選択',command=lambda: self.open_auto_selection(dialog,parent,digest)).pack(side='left',padx=6)
         ttk.Button(panel,text='閉じる',command=close).pack(side='left',padx=6)
+        dialog.protocol('WM_DELETE_WINDOW',close)
+        dialog.grab_set()
+
+    def open_auto_selection(self, owner, parent, digest):
+        dialog=tk.Toplevel(owner)
+        dialog.title('研究候補の自動選択（本体未読）')
+        dialog.transient(owner)
+        panel=ttk.Frame(dialog,padding=12)
+        panel.pack(fill='both',expand=True)
+        mode=tk.StringVar(value='seeded')
+        count=tk.StringVar(value='32')
+        seed=tk.StringVar(value='20251127')
+        batch=tk.StringVar(value='0')
+        ttk.Label(panel,text='全目録を対象に候補を選びます。研究実行・売買判断は行いません。',wraplength=420).pack(anchor='w')
+        ttk.Radiobutton(panel,text='再現可能な無作為抽出',variable=mode,value='seeded').pack(anchor='w')
+        ttk.Radiobutton(panel,text='全候補の順次処理用',variable=mode,value='sequential').pack(anchor='w')
+        for label,var in [('1バッチ件数（1～128）',count),('乱数シード（0以上）',seed),('バッチ番号（0開始）',batch)]:
+            ttk.Label(panel,text=label).pack(anchor='w')
+            ttk.Entry(panel,textvariable=var).pack(fill='x')
+        status=tk.StringVar(value='同じ目録・条件なら同じ候補になります。')
+        ttk.Label(panel,textvariable=status,wraplength=420).pack(anchor='w',pady=8)
+        def run():
+            try:
+                plan=save_auto_market_batch(parent,digest,mode.get(),int(count.get()),int(seed.get()),int(batch.get()))
+                next_text='終了' if plan['next_batch'] is None else str(plan['next_batch'])
+                status.set(f"{plan['selected_count']}件保存。次バッチ：{next_text}。研究利用ロック中。")
+                if plan['next_batch'] is not None:
+                    batch.set(str(plan['next_batch']))
+            except (OSError,ValueError,TypeError,KeyError,AttributeError,RecursionError):
+                status.set('選択失敗または全候補終了。条件・目録を確認してください。')
+        def close():
+            dialog.destroy()
+            owner.grab_set()
+        ttk.Button(panel,text='自動選択・保存',command=run).pack(side='left')
+        ttk.Button(panel,text='閉じる',command=close).pack(side='right')
         dialog.protocol('WM_DELETE_WINDOW',close)
         dialog.grab_set()
 
