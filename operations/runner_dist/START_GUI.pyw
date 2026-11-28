@@ -11,7 +11,6 @@ import sqlite3
 import csv
 from datetime import date, datetime, timezone, timedelta
 import base64
-import shutil
 import hashlib
 import importlib.util
 import subprocess
@@ -22,7 +21,7 @@ import math
 import urllib.request
 import urllib.error
 from app_version import VERSION
-from tkinter import messagebox, simpledialog
+from tkinter import messagebox
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog
@@ -2793,31 +2792,22 @@ class DualNoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def dual_api(endpoint,method='GET',body=None,token=None,gh=None):
+def dual_api(endpoint,method='GET',body=None,token=None):
     allowed={('GET',x) for x in (DUAL_QUEUE,DUAL_LEASE_GET,DUAL_BASE+'/pulls/41',DUAL_BASE+'/pulls/43',DUAL_BASE+'/pulls?state=open&per_page=100')}
     allowed|={('PUT',DUAL_LEASE),('POST',DUAL_BASE+'/issues/41/comments'),('POST',DUAL_BASE+'/issues/43/comments')}
     if (method,endpoint) not in allowed:
         raise ValueError('DUAL_ENDPOINT')
     data=json.dumps(body,separators=(',',':')).encode('utf-8') if body is not None else None
-    if gh is not None:
-        args=[gh,'api','--hostname','github.com','--method',method,endpoint,'--header','Accept: application/vnd.github+json',
-              '--header','X-GitHub-Api-Version: 2022-11-28','--header','Cache-Control: no-cache']
-        if data is not None:
-            args+=['--input','-']
-        p=subprocess.run(args,input=data or b'',stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=15,check=True,
-                         creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-        raw=p.stdout
-    else:
-        if type(token) is not str or not re.fullmatch(r'[A-Za-z0-9_]{20,255}',token):
-            raise ValueError('DUAL_AUTH')
-        req=urllib.request.Request('https://api.github.com'+endpoint,data=data,method=method,
-                                   headers={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json',
-                                            'X-GitHub-Api-Version':'2022-11-28','User-Agent':'Chappy-Trading-Lab',
-                                            'Cache-Control':'no-cache, no-store','Content-Type':'application/json'})
-        with urllib.request.build_opener(DualNoRedirect()).open(req,timeout=15) as response:
-            if response.geturl()!=req.full_url:
-                raise ValueError('DUAL_REDIRECT')
-            raw=response.read(1048577)
+    if type(token) is not str or not re.fullmatch(r'[A-Za-z0-9_]{20,255}',token):
+        raise ValueError('DUAL_AUTH')
+    req=urllib.request.Request('https://api.github.com'+endpoint,data=data,method=method,
+                               headers={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json',
+                                        'X-GitHub-Api-Version':'2022-11-28','User-Agent':'Chappy-Trading-Lab',
+                                        'Cache-Control':'no-cache, no-store','Content-Type':'application/json'})
+    with urllib.request.build_opener(DualNoRedirect()).open(req,timeout=15) as response:
+        if response.geturl()!=req.full_url:
+            raise ValueError('DUAL_REDIRECT')
+        raw=response.read(1048577)
     if len(raw)>1048576:
         raise ValueError('DUAL_RESPONSE_LIMIT')
     return json.loads(raw)
@@ -2871,6 +2861,14 @@ def dual_local_guard(path,owner,deadline,action):
         db.commit()
     finally:
         db.close()
+
+
+def dual_auth_check(api):
+    # Authenticated read only. Never rerun a completed job to test login.
+    _,q=dual_contents(api(DUAL_QUEUE))
+    _,lease=dual_remote_lease(api)
+    control_queue_summary(q,lease)
+    return 'PASS'
 
 
 def dual_remote_lease(api):
@@ -3398,48 +3396,51 @@ class DataDesktop(UpdateDesktop):
     def run_dual_guard(self):
         if self.closing or self.parquet_busy or self.catalog_busy or self.folder_dialog is not None:
             return
+        if self.busy or self.resident:
+            self.log('常駐または既存ジョブを停止してから排他・再開テストを実行してください。')
+            return
         parent=Path(self.path).parent
         stage=None
         selected=None
         if (parent/DUAL_JOURNAL).exists():
             try:
                 stage=resume_next(parent)
-                if stage==0:
-                    result='排他・再開テスト：保存済みPASS / 人工2/2工程完了・再実行なし / 研究実行ロック中'
-                    self.log(result)
-                    self.root.clipboard_clear()
-                    self.root.clipboard_append(result)
-                    return
                 if stage==2:
                     selected=resume_checkpoint_read(parent,1)['db']['path']
             except Exception:
                 self.log('排他・再開テスト：中断または不整合。自動再取得・解放しません。')
                 return
-        detail=('人工ジョブ第%d工程だけを実行し保存・解放します。市場データ研究は行いません。'%stage if stage else
-                '既存の共通研究DB run_guard.sqlite とGitHub共有リースを使用し、取得・保存・解放の試験を1回行います。')
-        if not messagebox.askyesno('排他・再開テスト',detail,parent=self.root):
-            return
-        if selected is None:
-            selected=filedialog.askopenfilename(parent=self.root,title='既存の共通研究DBを選択',filetypes=[('共通研究DB','run_guard.sqlite')])
-        if not selected:
-            return
-        gh=shutil.which('gh')
-        token=None
-        if not gh:
-            token=simpledialog.askstring('GitHub認証','GitHub CLIが見つかりません。一時使用する既存GitHubトークンを入力（保存・ログ出力なし）。',show='*',parent=self.root)
-            if not token:
+        if stage!=0:
+            detail=('人工ジョブ第%d工程だけを実行し保存・解放します。市場データ研究は行いません。'%stage if stage else
+                    '既存の共通研究DB run_guard.sqlite とGitHub共有リースを使用し、取得・保存・解放の試験を1回行います。')
+            if not messagebox.askyesno('排他・再開テスト',detail,parent=self.root):
                 return
+            if selected is None:
+                selected=filedialog.askopenfilename(parent=self.root,title='既存の共通研究DBを選択',filetypes=[('共通研究DB','run_guard.sqlite')])
+            if not selected:
+                return
+        # Use the exact existing desktop credential API, on the Tk thread.
+        # DPAPI retention, edits and clear remain controlled by the main UI.
+        token=self.get_token()
+        if not token:
+            return
         self.parquet_busy=True
+        self.busy=True
+        self.buttons()
         self.dual_guard_btn.configure(state='disabled')
         results=queue.Queue()
         def run():
             try:
-                api=lambda endpoint,method='GET',body=None:dual_api(endpoint,method,body,token=token,gh=gh)
-                dual_run(parent,selected,api,lambda phase:results.put(('progress',phase)),resume_stage=stage)
-                if stage is None:
-                    result='排他実行権テスト：PASS / 共有CAS・ローカル取得・保存・解放確認'
+                api=lambda endpoint,method='GET',body=None:dual_api(endpoint,method,body,token=token)
+                if stage==0:
+                    dual_auth_check(api)
+                    result='メイン画面の認証再利用：PASS（読取専用） / 人工2/2工程完了・再実行なし'
                 else:
-                    result='排他・再開テスト：PASS / 人工%d/2工程保存・実行権解放 / '%stage+('次回は第2工程のみ' if stage==1 else '第1工程再実行なし・完了')
+                    dual_run(parent,selected,api,lambda phase:results.put(('progress',phase)),resume_stage=stage)
+                    if stage is None:
+                        result='排他実行権テスト：PASS / 共有CAS・ローカル取得・保存・解放確認'
+                    else:
+                        result='排他・再開テスト：PASS / 人工%d/2工程保存・実行権解放 / '%stage+('次回は第2工程のみ' if stage==1 else '第1工程再実行なし・完了')
                 results.put(('done',result+' / 研究実行ロック中 / 2026年評価なし'))
             except Exception:
                 results.put(('done','排他実行権テスト：停止（認証・DB・共有実行権・中断記録を確認）。研究実行ロック中。'))
@@ -3454,6 +3455,8 @@ class DataDesktop(UpdateDesktop):
                 self.root.after(150,poll)
                 return
             self.parquet_busy=False
+            self.busy=False
+            self.buttons()
             self.dual_guard_btn.configure(state='normal')
             self.root.clipboard_clear()
             self.root.clipboard_append(result)

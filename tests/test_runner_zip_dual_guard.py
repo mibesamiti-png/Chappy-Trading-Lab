@@ -14,7 +14,7 @@ from pathlib import Path
 import unittest
 SOURCE=Path(__file__).resolve().parents[1]/'operations/runner_dist/START_GUI.pyw'
 tree=ast.parse(SOURCE.read_text(encoding='utf-8'))
-names={'control_queue_summary','dual_contents','dual_local_guard','dual_remote_lease','dual_remote_write','dual_owned','dual_run','resume_file','resume_read','resume_db_identity','resume_expected_bars','resume_checkpoint_read','resume_next','resume_do_stage','aggregate_session_rows'}
+names={'control_queue_summary','dual_contents','dual_local_guard','dual_remote_lease','dual_auth_check','dual_remote_write','dual_owned','dual_run','resume_file','resume_read','resume_db_identity','resume_expected_bars','resume_checkpoint_read','resume_next','resume_do_stage','aggregate_session_rows'}
 constants={'CONTROL_IDS','DUAL_PR','DUAL_HEAD','DUAL_BASE','DUAL_LEASE','DUAL_LEASE_GET','DUAL_QUEUE','DUAL_JOURNAL','DUAL_STATUS_TEXT','RESUME_PR','RESUME_HEAD','RESUME_PROTOCOL','RESEARCH_HORIZONS'}
 nodes=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in names or isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id in constants for t in n.targets)]
 scope=dict(base64=base64,hashlib=hashlib,json=json,os=os,re=re,sqlite3=sqlite3,stat=stat,Path=Path,
@@ -113,6 +113,19 @@ class DualGuardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             scope['resume_next'](self.p)
         self.assertEqual(self.api.writes,4)
+    def test_auth_check_is_read_only(self):
+        self.assertEqual(scope['dual_auth_check'](self.api),'PASS')
+        self.assertEqual((self.api.writes,self.api.comments),(0,0))
+    def test_main_ui_auth_contract(self):
+        desktop=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='DataDesktop')
+        method=next(n for n in desktop.body if isinstance(n,ast.FunctionDef) and n.name=='run_dual_guard')
+        calls=[n for n in ast.walk(method) if isinstance(n,ast.Call)]
+        get_calls=[n for n in calls if isinstance(n.func,ast.Attribute) and n.func.attr=='get_token']
+        self.assertEqual(len(get_calls),1)
+        self.assertEqual(get_calls[0].func.value.id,'self')
+        self.assertFalse(any(isinstance(n.func,ast.Attribute) and n.func.attr in ('askstring','load','save') for n in calls))
+        self.assertTrue(any(isinstance(n.func,ast.Name) and n.func.id=='dual_auth_check' for n in calls))
+        self.assertTrue(any(isinstance(n.func,ast.Name) and n.func.id=='dual_api' and any(k.arg=='token' and isinstance(k.value,ast.Name) and k.value.id=='token' for k in n.keywords) for n in calls))
     def test_active_remote_stops_without_write(self):
         self.api.lease.update(status='active',owner='foreign',task_ids=['CTL-001'],expires_utc='2000-01-01T00:00:00Z')
         with self.assertRaises(ValueError):
