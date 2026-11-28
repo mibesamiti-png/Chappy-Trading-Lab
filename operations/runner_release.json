@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "version": "0.6.0",
+  "min_launcher": 1,
+  "scope": "SYNTHETIC_ONLY",
+  "files": {}
+}
