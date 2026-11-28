@@ -1,7 +1,7 @@
 name: Runner ZIP registration
 on:
   push:
-    branches: [chat/runner-zip-registration-20261128, chat/runner-zip-diagnostics-20261128, chat/runner-zip-research-probe-20261128, chat/runner-parquet-probe-20261128, chat/runner-market-catalog-20261128, chat/runner-market-selection-20261128]
+    branches: [chat/runner-zip-registration-20261128, chat/runner-zip-diagnostics-20261128, chat/runner-zip-research-probe-20261128, chat/runner-parquet-probe-20261128, chat/runner-market-catalog-20261128, chat/runner-market-selection-20261128, chat/runner-auto-selection-20261128]
   pull_request:
     branches: [chat/runner-source-releases-20261128]
     paths:
