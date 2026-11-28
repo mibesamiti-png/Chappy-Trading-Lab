@@ -1405,6 +1405,83 @@ def quality_index_run(parent,count,seed,min_months,min_bps,persist=True):
     return receipt
 
 
+# Research-engine building block. Integer artificial OHLCV values, explicit
+# session-relative offsets. No file readers, calendar inference or real inputs.
+RESEARCH_HORIZONS=(1,5,15,30)
+HORIZON_RECEIPT='synthetic_horizon_aggregation.local.json'
+
+
+def aggregate_session_rows(rows,session_minutes,horizon):
+    if type(session_minutes) is not int or not 1<=session_minutes<=1440 or type(horizon) is not int or horizon not in RESEARCH_HORIZONS:
+        raise ValueError('SESSION_POLICY')
+    if type(rows) not in (list,tuple) or len(rows)>session_minutes:
+        raise ValueError('SESSION_ROWS')
+    by_minute={}
+    previous=-1
+    for row in rows:
+        if type(row) not in (list,tuple) or len(row)!=6 or any(type(v) is not int for v in row):
+            raise ValueError('SESSION_ROW_SCHEMA')
+        minute,o,h,l,c,v=row
+        if not previous<minute<session_minutes or min(o,h,l,c)<=0 or h<max(o,l,c) or l>min(o,h,c) or v<0:
+            raise ValueError('SESSION_ROW_INVALID')
+        previous=minute
+        by_minute[minute]=(o,h,l,c,v)
+    bars=[]
+    missing=0
+    tail=session_minutes%horizon
+    for start in range(0,session_minutes-tail,horizon):
+        window=[by_minute.get(i) for i in range(start,start+horizon)]
+        if any(x is None for x in window):
+            missing+=1
+            continue
+        bars.append((start,window[0][0],max(x[1] for x in window),
+                     min(x[2] for x in window),window[-1][3],sum(x[4] for x in window)))
+    return {'bars':bars,'missing_windows':missing,'tail_minutes':tail,
+            'missing_minutes':session_minutes-len(rows)}
+
+
+def synthetic_horizon_expected():
+    return {'1':{'complete':104,'missing_windows':1,'tail_minutes':0},
+            '5':{'complete':20,'missing_windows':1,'tail_minutes':0},
+            '15':{'complete':6,'missing_windows':1,'tail_minutes':0},
+            '30':{'complete':2,'missing_windows':1,'tail_minutes':15}}
+
+
+def synthetic_horizon_checkpoint(parent):
+    parent=local_folder(str(parent))
+    # Two independent invented sessions, one missing minute and one short session.
+    sessions=((60,[(i,100+i,102+i,99+i,101+i,3) for i in range(60) if i!=7]),
+              (45,[(i,20,21,19,20,2) for i in range(45)]))
+    summaries={}
+    for horizon in RESEARCH_HORIZONS:
+        results=[aggregate_session_rows(rows,length,horizon) for length,rows in sessions]
+        summaries[str(horizon)]={'complete':sum(len(r['bars']) for r in results),
+                                 'missing_windows':sum(r['missing_windows'] for r in results),
+                                 'tail_minutes':sum(r['tail_minutes'] for r in results)}
+        if horizon==30 and (results[0]['bars']!=[(30,130,161,129,160,90)] or results[1]['bars']!=[(0,20,21,19,20,60)]):
+            raise ValueError('HORIZON_OHLCV_MISMATCH')
+    if summaries!=synthetic_horizon_expected():
+        raise ValueError('HORIZON_WINDOW_MISMATCH')
+    for bad in ([(0,10,12,9,11,1),(0,10,12,9,11,1)],
+                [(60,10,12,9,11,1)],[(0,10,8,9,11,1)],
+                [(0,10,12,9,11,-1)]):
+        try:
+            aggregate_session_rows(bad,60,5)
+        except ValueError:
+            pass
+        else:
+            raise ValueError('HORIZON_REJECTION_FAILED')
+    receipt={'schema':1,'scope':'SYNTHETIC_ONLY','protocol':'session-ohlcv-horizons-v1',
+             'market_member_reads':0,'holdout_evaluation':'NOT_PERFORMED','results':summaries}
+    raw=json.dumps(receipt,sort_keys=True).encode('utf-8')
+    dest=parent/HORIZON_RECEIPT
+    atomic(dest,raw)
+    with dest.open('rb') as f:
+        if f.read(16385)!=raw:
+            raise ValueError('HORIZON_SAVE_FAILED')
+    return receipt
+
+
 # A fixed, local acceptance suite once per installed release.
 DIAG_FILE='runner_diagnostics.local.json'
 DIAG_LIMIT=16384
@@ -1412,6 +1489,7 @@ DIAG_STEPS=(('zip','人工ZIP・期間制限'),('parquet','既存Parquet環境')
             ('ohlcv','人工OHLCV'),('aggregation','人工集計'),
             ('checkpoint','人工研究チェックポイント'),
             ('catalog','保存済みZIP目録・現行ファイル属性'),
+            ('horizons','人工1・5・15・30分足集計'),
             ('quality','保存済み月別選択の再現確認'))
 DIAG_CODES=('PASS','SKIP_NOT_CONFIGURED','FAIL_TIMEOUT','FAIL_IO','FAIL_VALIDATION','FAIL_REPRODUCIBILITY','FAIL_INTERNAL')
 
@@ -1480,6 +1558,7 @@ def diagnostic_run(parent,version,notify=lambda *_:None):
         'aggregation':synthetic_aggregation,
         'checkpoint':check_checkpoint,
         'catalog':lambda:load_market_candidates(parent),
+        'horizons':lambda:synthetic_horizon_checkpoint(parent),
         'quality':lambda:diagnostic_quality(parent),
     }
     rows=[]
