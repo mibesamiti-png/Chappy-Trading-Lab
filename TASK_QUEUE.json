@@ -13,8 +13,8 @@
       "status": "blocked",
       "title": "Verify Work/Chat handoff and cross-run persistence",
       "acceptance": "read current repo state and confirm local inputs and artifacts survive a fresh run; report only non-sensitive status",
-      "progress": "Fresh isolated interpreter access/checkpoint probe and duplicate controls passed. Actual fresh scheduled-agent continuity remains unverified; no schedule enabled.",
-      "blocker": "Actual fresh scheduled-agent continuity and unattended dependency permissions unqualified; ordinary constrained stack import failed, approved computation imports passed. Owner scheduling decision still required."
+      "progress": "Original-context and synthetic runner operational checks passed; owner reported v0.8.24 runner handoff readback and authentication. GitHub PR #41/#43 reports and idle release independently observed. Actual fresh-agent private artifact access remains unverified.",
+      "blocker": "Fresh intended AI context access to original registry, scientific checkpoints, same common guard DB and dependencies remains unverified; unattended permission and restart readiness unqualified. No schedule enabled."
     },
     {
       "id": "CTL-002",
@@ -73,6 +73,7 @@
     }
   ],
   "execution_record": "runs/2026-11-27-execution.md",
-  "current_draft_pr": 1,
-  "reconciled_main": "be982cd4df3bff1229a846e7616d7be6f8206d67"
+  "current_draft_pr": null,
+  "reconciled_main": "a2f16d770c0334a5165a62bf7695eee5adca3108",
+  "coordination_note": "PRs #3, #1 and #2 merged; research task/protocol revisions and status unchanged. CTL-001 fresh Work probe pending. No active draft from the previous checkpoint."
 }
