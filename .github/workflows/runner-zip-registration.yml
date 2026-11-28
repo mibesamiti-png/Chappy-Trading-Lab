@@ -1,0 +1,35 @@
+name: Runner ZIP registration
+on:
+  push:
+    branches: [chat/runner-zip-registration-20261128]
+  pull_request:
+    branches: [chat/runner-source-releases-20261128]
+    paths:
+      - 'operations/runner_dist/START_GUI.pyw'
+      - 'tests/test_runner_zip_registration.py'
+      - '.github/workflows/runner-zip-registration.yml'
+      - 'operations/runner_release.json'
+      - 'operations/runner_dist/app_version.py'
+permissions:
+  contents: read
+jobs:
+  synthetic-registration:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile GUI and run synthetic registration tests
+        run: |
+          python -m py_compile operations/runner_dist/START_GUI.pyw
+          python -m unittest discover -s tests -p test_runner_zip_registration.py -v
+      - name: Verify release manifest for changed files
+        run: python tests/verify_runner_zip_manifest.py
