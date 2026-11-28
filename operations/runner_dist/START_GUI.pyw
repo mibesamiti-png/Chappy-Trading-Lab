@@ -673,6 +673,76 @@ def save_auto_market_batch(parent, catalog_hash, mode, count, seed, batch_index)
     return plan
 
 
+PLAN_FILE = 'market_research_plan.local.json'
+PLAN_LIMIT = 8192
+
+
+def plan_read(parent):
+    digest, rows = load_market_candidates(parent)
+    with (parent / PLAN_FILE).open('rb') as f:
+        raw = f.read(PLAN_LIMIT+1)
+    if len(raw) > PLAN_LIMIT:
+        raise ValueError('PLAN_LIMIT')
+    p = json.loads(raw)
+    if type(p) is not dict or p.get('schema') != 1 or p.get('scope') != 'METADATA_PLANNING_ONLY' or p.get('research_access') != 'LOCKED' or p.get('member_reads') != 0:
+        raise ValueError('PLAN_INVALID')
+    if p.get('catalog_sha256') != digest or p.get('universe_size') != len(rows):
+        raise ValueError('PLAN_STALE')
+    mode, count, seed = p['mode'], p['batch_size'], p['seed']
+    _, expected = auto_market_batch(rows, mode, count, seed, 0)
+    total = (len(rows)+count-1)//count
+    next_batch = p['next_batch']
+    if type(next_batch) is not int or not 0 <= next_batch <= total or p['total_batches'] != total or p['algorithm'] != expected['algorithm'] or p['reason'] != expected['reason']:
+        raise ValueError('PLAN_INVALID')
+    if p['prepared_count'] != min(next_batch*count,len(rows)) or p['status'] != ('COMPLETE' if next_batch == total else 'READY'):
+        raise ValueError('PLAN_INVALID')
+    if p.get('executed_count') != 0:
+        raise ValueError('PLAN_INVALID')
+    return p
+
+
+def plan_write(parent, p):
+    raw=json.dumps(p, ensure_ascii=False, sort_keys=True).encode('utf-8')
+    if len(raw) > PLAN_LIMIT:
+        raise ValueError('PLAN_LIMIT')
+    dest=parent / PLAN_FILE
+    atomic(dest,raw)
+    with dest.open('rb') as f:
+        if f.read(PLAN_LIMIT+1) != raw:
+            raise ValueError('PLAN_SAVE_FAILED')
+
+
+def plan_create(parent, digest, mode, count, seed):
+    current,rows=load_market_candidates(parent)
+    if current != digest:
+        raise ValueError('PLAN_STALE')
+    if (parent / PLAN_FILE).exists():
+        raise ValueError('PLAN_EXISTS')
+    _,sel=auto_market_batch(rows,mode,count,seed,0)
+    p={'schema':1,'scope':'METADATA_PLANNING_ONLY','research_access':'LOCKED',
+       'member_reads':0,'catalog_sha256':current,'universe_size':len(rows),
+       'mode':mode,'batch_size':count,'seed':sel['seed'],'algorithm':sel['algorithm'],
+       'reason':sel['reason'],'total_batches':(len(rows)+count-1)//count,
+       'next_batch':0,'prepared_count':0,'executed_count':0,'status':'READY'}
+    plan_write(parent,p)
+    return plan_read(parent)
+
+
+def plan_step(parent):
+    p=plan_read(parent)
+    if p['status']=='COMPLETE':
+        return p
+    # Persist candidate receipt first. If interrupted before cursor commit, retrying
+    # the same batch recreates identical receipt, not a second execution.
+    result=save_auto_market_batch(parent,p['catalog_sha256'],p['mode'],
+                                  p['batch_size'],p['seed'],p['next_batch'])
+    p['next_batch']+=1
+    p['prepared_count']+=result['selected_count']
+    p['status']='COMPLETE' if p['next_batch']==p['total_batches'] else 'READY'
+    plan_write(parent,p)
+    return plan_read(parent)
+
+
 OHLCV_WORKER = r'''
 import io, json, zipfile, time
 from datetime import datetime, timezone, timedelta
@@ -893,8 +963,45 @@ class DataDesktop(UpdateDesktop):
             dialog.destroy()
             owner.grab_set()
         ttk.Button(panel,text='自動選択・保存',command=run).pack(side='left')
+        ttk.Button(panel,text='計画を作成・再開',command=lambda: self.open_research_plan(dialog,parent,digest,mode.get(),count.get(),seed.get())).pack(side='left',padx=5)
         ttk.Button(panel,text='閉じる',command=close).pack(side='right')
         dialog.protocol('WM_DELETE_WINDOW',close)
+        dialog.grab_set()
+
+    def open_research_plan(self, owner, parent, digest, mode, count, seed):
+        try:
+            p=plan_read(parent) if (parent / PLAN_FILE).exists() else plan_create(parent,digest,mode,int(count),int(seed))
+        except (OSError,ValueError,TypeError,KeyError,AttributeError,RecursionError):
+            messagebox.showerror('研究準備計画','計画を読み込めません。目録変更または設定不正の可能性があります。既存計画は上書きしません。',parent=owner)
+            return
+        dialog=tk.Toplevel(owner)
+        dialog.title('研究準備計画（本体未読）')
+        dialog.transient(owner)
+        panel=ttk.Frame(dialog,padding=12)
+        panel.pack(fill='both',expand=True)
+        status=tk.StringVar()
+        ttk.Label(panel,text='保存済み条件で候補を順次準備します。研究実行・データ本体読み取りは行いません。',wraplength=430).pack(anchor='w')
+        ttk.Label(panel,textvariable=status,wraplength=430).pack(anchor='w',pady=8)
+        def show(state):
+            status.set(f"準備済み：{state['prepared_count']}/{state['universe_size']}候補\nバッチ：{state['next_batch']}/{state['total_batches']}\n方式：{state['mode']} / 件数：{state['batch_size']} / seed：{state['seed']}\n研究実行：0件（ロック中）")
+            progress.configure(maximum=state['universe_size'],value=state['prepared_count'])
+            step_btn.configure(state='disabled' if state['status']=='COMPLETE' else 'normal')
+        progress=ttk.Progressbar(panel,length=400)
+        progress.pack(fill='x')
+        def advance():
+            try:
+                show(plan_step(parent))
+            except (OSError,ValueError,TypeError,KeyError,AttributeError,RecursionError):
+                status.set('準備失敗。計画を進めず、保存状態を確認してください。')
+                step_btn.configure(state='disabled')
+        step_btn=ttk.Button(panel,text='次バッチを準備',command=advance)
+        step_btn.pack(side='left',pady=8)
+        def close():
+            dialog.destroy()
+            owner.grab_set()
+        ttk.Button(panel,text='閉じる',command=close).pack(side='right')
+        dialog.protocol('WM_DELETE_WINDOW',close)
+        show(p)
         dialog.grab_set()
 
     def run_ohlcv_probe(self):
