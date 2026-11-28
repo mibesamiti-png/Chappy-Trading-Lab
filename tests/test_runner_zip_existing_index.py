@@ -7,15 +7,17 @@ import re
 import sqlite3
 import stat
 import tempfile
+import hashlib
+from unittest.mock import patch
 import unittest
 
 SOURCE=Path(__file__).resolve().parents[1]/'operations/runner_dist/START_GUI.pyw'
 tree=ast.parse(SOURCE.read_text(encoding='utf-8'))
-names={'drive_allowed','local_folder','index_file_metadata','index_schema_authorizer','existing_index_probe'}
+names={'drive_allowed','local_folder','index_file_metadata','index_schema_authorizer','existing_index_probe','index_column_authorizer','candidate_filename_symbols','index_column_map'}
 nodes=[n for n in tree.body if
        isinstance(n,ast.FunctionDef) and n.name in names or
        isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id.startswith('INDEX_') for t in n.targets)]
-scope=dict(Path=Path,os=os,re=re,sqlite3=sqlite3,stat=stat,json=json,atomic=lambda p,b:p.write_bytes(b))
+scope=dict(hashlib=hashlib,Path=Path,os=os,re=re,sqlite3=sqlite3,stat=stat,json=json,atomic=lambda p,b:p.write_bytes(b))
 exec(compile(ast.Module(body=nodes,type_ignores=[]),str(SOURCE),'exec'),scope)
 
 
@@ -67,6 +69,53 @@ class ExistingIndexTests(unittest.TestCase):
         p.unlink()
         with self.assertRaisesRegex(ValueError,'INDEX_NAME_REQUIRED'):
             scope['existing_index_probe'](self.root,str(self.root/'another.sqlite'))
+
+    def test_column_map_no_application_rows(self):
+        db=sqlite3.connect(self.source)
+        try:
+            db.execute('CREATE TABLE symbols(symbol TEXT PRIMARY KEY, secret TEXT DEFAULT "SEALED_CANARY")')
+            db.execute('CREATE TABLE monthly_coverage(ticker TEXT, month TEXT, rows INTEGER)')
+            db.execute("INSERT INTO monthly_coverage VALUES ('AAA','2026-01',123456)")
+            db.commit()
+        finally:
+            db.close()
+        scope['existing_index_probe'](self.root,str(self.source))
+        candidates=[{'archive_index':0,'member':'AAA_clean_1min.parquet'},
+                    {'archive_index':0,'member':'folder/BBB_clean_1min.parquet'},
+                    {'archive_index':1,'member':'BBB_clean_1min.parquet'},
+                    {'archive_index':0,'member':'unknown.parquet'}]
+        before=self.source.read_bytes()
+        with patch.dict(scope,{'load_market_candidates':lambda _:('a'*64,candidates)}):
+            result=scope['index_column_map'](self.root)
+        self.assertEqual(set(result['filename_candidates']),{'AAA'})
+        self.assertEqual(result['ambiguous_filename_count'],2)
+        self.assertEqual(result['unrecognized_filename_count'],1)
+        self.assertEqual(result['possible_keys']['monthly_coverage'],{'symbol':['ticker'],'period':['month']})
+        self.assertEqual(result['matched_index_rows'],0)
+        self.assertEqual(result['research_access'],'LOCKED')
+        raw=(self.root/'existing_index_column_map.local.json').read_text()
+        self.assertNotIn('SEALED_CANARY',raw)
+        self.assertNotIn('123456',raw)
+        self.assertEqual(self.source.read_bytes(),before)
+
+    def test_column_authorizer_refuses_data_and_arbitrary_pragma(self):
+        db=sqlite3.connect(self.source)
+        try:
+            db.execute('CREATE TABLE symbols(symbol TEXT)')
+            db.set_authorizer(scope['index_column_authorizer'])
+            self.assertEqual(db.execute('PRAGMA main.table_xinfo("symbols")').fetchone()[1],'symbol')
+            for sql in ('SELECT symbol FROM symbols','PRAGMA main.table_xinfo("monthly")','PRAGMA main.journal_mode=OFF','SELECT sql FROM sqlite_schema'):
+                with self.assertRaises(sqlite3.DatabaseError):
+                    db.execute(sql)
+        finally:
+            db.close()
+
+    def test_column_map_stale_index(self):
+        scope['existing_index_probe'](self.root,str(self.source))
+        with self.source.open('ab') as f:
+            f.write(b'x')
+        with self.assertRaisesRegex(ValueError,'INDEX_CHANGED'):
+            scope['index_column_map'](self.root)
 
     def test_invalid_database(self):
         self.source.write_bytes(b'x'*1024)

@@ -1023,6 +1023,112 @@ def existing_index_probe(parent,value):
     return receipt
 
 
+# Schema mapping is advisory, never an authority for data access.
+INDEX_MAP_LIMIT=512*1024
+INDEX_MAP_TABLES=('symbols','monthly_coverage','calendar','session_quality',
+                  'largest_intraday_gaps','shared_gap_candidates','archive_status',
+                  'evidence_sources','official_events','outside_session','run_metadata')
+
+
+def index_column_authorizer(action,arg1,arg2,database,source):
+    # Only exact schema operations; no application table reads, virtual table
+    # queries, schema SQL text, views, functions, writes or ATTACH.
+    if action==sqlite3.SQLITE_PRAGMA and arg1=='table_xinfo' and arg2 in INDEX_MAP_TABLES and database=='main' and source is None:
+        return sqlite3.SQLITE_OK
+    return index_schema_authorizer(action,arg1,arg2,database,source)
+
+
+def candidate_filename_symbols(rows):
+    # Naming convention observed in the local GUI, not a verified ticker join.
+    by_symbol={}
+    unrecognized=0
+    for row in rows:
+        name=row['member']
+        match=re.fullmatch(r'([A-Za-z0-9][A-Za-z0-9._-]{0,19})_clean_1min\.parquet',name.rsplit('/',1)[-1])
+        if not match:
+            unrecognized+=1
+            continue
+        symbol=match.group(1).upper()
+        by_symbol.setdefault(symbol,[]).append({'archive_index':row['archive_index'],'member':name})
+    unique={symbol:items[0] for symbol,items in sorted(by_symbol.items()) if len(items)==1}
+    ambiguous=sum(len(items) for items in by_symbol.values() if len(items)>1)
+    return unique,ambiguous,unrecognized
+
+
+def index_column_map(parent):
+    parent=local_folder(str(parent))
+    dest=parent/'existing_research_index.local.json'
+    with dest.open('rb') as f:
+        raw=f.read(INDEX_RECEIPT_LIMIT+1)
+    if len(raw)>INDEX_RECEIPT_LIMIT:
+        raise ValueError('INDEX_RECEIPT_LIMIT')
+    receipt=json.loads(raw)
+    if (type(receipt) is not dict or receipt.get('schema')!=1 or
+            receipt.get('scope')!='LOCAL_SCHEMA_ONLY' or receipt.get('research_access')!='LOCKED' or
+            receipt.get('application_table_queries')!=0 or receipt.get('market_member_reads')!=0):
+        raise ValueError('INDEX_RECEIPT_INVALID')
+    path,before=index_file_metadata(receipt['source'])
+    if before[2]!=receipt['size'] or before[3]!=receipt['mtime_ns']:
+        raise ValueError('INDEX_CHANGED')
+    digest,rows=load_market_candidates(parent)
+    candidates,ambiguous,unknown=candidate_filename_symbols(rows)
+    connection=sqlite3.connect(path.as_uri()+'?mode=ro&immutable=1',uri=True,timeout=1)
+    schemas={}
+    try:
+        connection.execute('PRAGMA query_only=ON')
+        connection.execute('PRAGMA trusted_schema=OFF')
+        connection.set_authorizer(index_column_authorizer)
+        actual=connection.execute("SELECT name,type FROM main.sqlite_schema WHERE type IN ('table','view') ORDER BY name LIMIT 65").fetchall()
+        if len(actual)>INDEX_MAX_OBJECTS:
+            raise ValueError('INDEX_SCHEMA_LIMIT')
+        table_names={name for name,kind in actual if kind=='table'}
+        for name in INDEX_MAP_TABLES:
+            if name not in table_names:
+                continue
+            # Names are from the fixed allowlist, not user-controlled SQL.
+            columns=connection.execute('PRAGMA main.table_xinfo("'+name+'")').fetchall()
+            if not 1<=len(columns)<=128:
+                raise ValueError('INDEX_COLUMN_LIMIT')
+            safe=[]
+            for cid,col,decl,notnull,default,pk,hidden in columns:
+                if (type(col) is not str or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,127}',col)
+                        or type(decl) is not str or len(decl)>80 or any(ord(c)<32 for c in decl)):
+                    raise ValueError('INDEX_COLUMN_REFUSED')
+                # Never save default expressions or reserved identifiers.
+                if re.search(r'2026|holdout|封印',col,re.I):
+                    continue
+                safe.append({'name':col,'type':decl,'primary_key':int(pk),'hidden':int(hidden)})
+            schemas[name]=safe
+    finally:
+        connection.close()
+    if index_file_metadata(str(path))[1]!=before:
+        raise ValueError('INDEX_CHANGED')
+    current,_=load_market_candidates(parent)
+    if current!=digest:
+        raise ValueError('SELECTION_CATALOG_STALE')
+    # Potential join keys are suggestions only; no SQLite data rows are joined.
+    hints={}
+    for table,columns in schemas.items():
+        names={col['name'].lower():col['name'] for col in columns if col['hidden']==0}
+        hints[table]={'symbol':[names[k] for k in ('symbol','ticker') if k in names],
+                      'period':[names[k] for k in ('month','date','session','session_date','year','timestamp','ym') if k in names]}
+    out={'schema':1,'scope':'LOCAL_COLUMN_MAP_ONLY','index_source':str(path),
+         'index_size':before[2],'index_mtime_ns':before[3],'catalog_sha256':digest,
+         'columns':schemas,'possible_keys':hints,'filename_candidates':candidates,
+         'ambiguous_filename_count':ambiguous,'unrecognized_filename_count':unknown,
+         'application_table_queries':0,'market_member_reads':0,
+         'matched_index_rows':0,'development_period':'UNVERIFIED','research_access':'LOCKED'}
+    payload=json.dumps(out,ensure_ascii=False,sort_keys=True).encode('utf-8')
+    if len(payload)>INDEX_MAP_LIMIT:
+        raise ValueError('INDEX_MAP_LIMIT')
+    dest=parent/'existing_index_column_map.local.json'
+    atomic(dest,payload)
+    with dest.open('rb') as f:
+        if f.read(INDEX_MAP_LIMIT+1)!=payload:
+            raise ValueError('INDEX_MAP_SAVE_FAILED')
+    return out
+
+
 class DataDesktop(UpdateDesktop):
     def __init__(self, *args, **kwargs):
         self.folder_dialog = None
@@ -1395,6 +1501,32 @@ class DataDesktop(UpdateDesktop):
                 output.set('\n'.join(lines) or '保存場所未指定')
             except (OSError, ValueError) as exc:
                 output.set('確認できません：' + registration_error(exc))
+        def inspect_index_columns():
+            if not messagebox.askyesno('既存索引・列構造','保存済み索引の列名とZIP目録上の銘柄名候補を確認します。データ行・市場ZIP本体は読みません。',parent=dialog):
+                return
+            try:
+                result=index_column_map(Path(self.path).parent)
+                window=tk.Toplevel(dialog)
+                window.title('既存索引・列構造（ローカルのみ）')
+                window.geometry('720x540')
+                window.transient(dialog)
+                panel2=ttk.Frame(window,padding=10)
+                panel2.pack(fill='both',expand=True)
+                report=tk.Text(panel2,wrap='word')
+                scroll2=ttk.Scrollbar(panel2,command=report.yview)
+                report.configure(yscrollcommand=scroll2.set)
+                scroll2.pack(side='right',fill='y')
+                report.pack(fill='both',expand=True)
+                lines=[f"ファイル名からの銘柄候補：{len(result['filename_candidates'])}件",
+                       f"曖昧：{result['ambiguous_filename_count']}件 / 形式外：{result['unrecognized_filename_count']}件",
+                       "実際の索引行との照合：未実施 / 研究利用ロック中",""]
+                for table,cols in result['columns'].items():
+                    lines.append(table+': '+', '.join(c['name']+' ('+c['type']+')' for c in cols))
+                report.insert('1.0','\n\n'.join(lines))
+                report.configure(state='disabled')
+                self.log('既存索引の列構造・銘柄ファイル名候補確認成功。データ行未照会・研究利用ロック中。')
+            except (OSError,ValueError,sqlite3.Error,TypeError,KeyError,AttributeError,RecursionError):
+                output.set('列構造を確認できません。既存索引確認と市場ZIP目録を再実行してください。')
         def inspect_existing_index():
             chosen=filedialog.askopenfilename(parent=dialog,title='既存のhf_light_index.sqliteを選択',
                                               filetypes=[('研究索引','hf_light_index.sqlite'),('SQLite','*.sqlite')])
@@ -1430,6 +1562,7 @@ class DataDesktop(UpdateDesktop):
         bar.pack(side='bottom', fill='x')
         ttk.Button(bar, text='登録状態を確認', command=inspect).pack(side='left')
         ttk.Button(bar, text='既存索引確認', command=inspect_existing_index).pack(side='left',padx=5)
+        ttk.Button(bar, text='列構造確認', command=inspect_index_columns).pack(side='left',padx=5)
         ttk.Button(bar, text='保存', command=save).pack(side='right')
         ttk.Button(bar, text='キャンセル', command=close).pack(side='right', padx=5)
         dialog.protocol('WM_DELETE_WINDOW', close)
