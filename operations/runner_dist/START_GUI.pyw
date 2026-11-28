@@ -1482,6 +1482,106 @@ def synthetic_horizon_checkpoint(parent):
     return receipt
 
 
+# Explicit calendar adapter: only caller-provided session dates/UTC offset/
+# closing minutes. No inference of holidays, DST rules or actual market data.
+SESSION_MAP_RECEIPT='synthetic_session_mapping.local.json'
+SESSION_EPOCH=date(1970,1,1)
+SESSION_FIRST=(date(2000,1,1)-SESSION_EPOCH).days*1440
+SESSION_LIMIT=(date(2026,1,1)-SESSION_EPOCH).days*1440
+
+
+def session_day_base(day):
+    if type(day) is not str:
+        raise ValueError('SESSION_DATE')
+    d=date.fromisoformat(day)
+    if d.isoformat()!=day or not 2000<=d.year<=2025:
+        raise ValueError('SESSION_PERIOD')
+    return (d-SESSION_EPOCH).days*1440
+
+
+def map_session_rows(schedule,rows):
+    # schedule: (ISO session date, explicit UTC offset in minutes, duration).
+    # rows: (UTC epoch minute, integer open, high, low, close, volume).
+    if type(schedule) not in (list,tuple) or not 1<=len(schedule)<=366:
+        raise ValueError('SESSION_SCHEDULE')
+    if type(rows) not in (list,tuple) or len(rows)>366*1440:
+        raise ValueError('SESSION_INPUT_LIMIT')
+    sessions={}
+    previous_day=''
+    for item in schedule:
+        if type(item) not in (list,tuple) or len(item)!=3:
+            raise ValueError('SESSION_SCHEDULE')
+        day,offset,duration=item
+        base=session_day_base(day)
+        if day<=previous_day or type(offset) is not int or offset not in (-300,-240) or type(duration) is not int or not 1<=duration<=390:
+            raise ValueError('SESSION_SCHEDULE')
+        previous_day=day
+        start=base+570-offset
+        sessions[base//1440]={'date':day,'start':start,'length':duration,'rows':[]}
+    previous=-1
+    outside=0
+    for row in rows:
+        if type(row) not in (tuple,list) or len(row)!=6 or any(type(v) is not int for v in row):
+            raise ValueError('SESSION_INPUT_SCHEMA')
+        minute,o,h,l,c,v=row
+        if not SESSION_FIRST<=minute<SESSION_LIMIT:
+            raise ValueError('SESSION_PERIOD')
+        if minute<=previous or min(o,h,l,c)<=0 or h<max(o,l,c) or l>min(o,h,c) or v<0:
+            raise ValueError('SESSION_INPUT_INVALID')
+        previous=minute
+        session=sessions.get(minute//1440)
+        if session is None or not session['start']<=minute<session['start']+session['length']:
+            outside+=1
+            continue
+        session['rows'].append((minute-session['start'],o,h,l,c,v))
+    return {'sessions':list(sessions.values()),'outside':outside}
+
+
+def synthetic_session_mapping_checkpoint(parent):
+    parent=local_folder(str(parent))
+    schedule=[('2025-01-06',-300,390),('2025-07-07',-240,390),('2025-07-08',-240,210)]
+    starts=[session_day_base(day)+570-offset for day,offset,_ in schedule]
+    valid=(10,12,9,11,2)
+    rows=[]
+    for start,(_,_,duration) in zip(starts,schedule):
+        rows.extend((start+i,*valid) for i in range(-1,duration+1))
+    # An invented closed day: the schedule deliberately contains no session.
+    rows.append((session_day_base('2025-07-09')+810,*valid))
+    result=map_session_rows(schedule,rows)
+    if result['outside']!=7 or [s['length'] for s in result['sessions']]!=[390,390,210]:
+        raise ValueError('SESSION_MAPPING_COUNT')
+    if [s['start']%1440 for s in result['sessions']]!=[870,810,810]:
+        raise ValueError('SESSION_MAPPING_OFFSET')
+    counts=[]
+    for session in result['sessions']:
+        n=session['length']
+        if len(session['rows'])!=n or session['rows'][0][0]!=0 or session['rows'][-1][0]!=n-1:
+            raise ValueError('SESSION_MAPPING_BOUNDARY')
+        aggregated=aggregate_session_rows(session['rows'],n,30)
+        if aggregated['missing_windows'] or aggregated['tail_minutes']:
+            raise ValueError('SESSION_MAPPING_AGGREGATION')
+        counts.append(len(aggregated['bars']))
+    if counts!=[13,13,7]:
+        raise ValueError('SESSION_MAPPING_AGGREGATION')
+    try:
+        map_session_rows(schedule,[(SESSION_LIMIT,*valid)])
+    except ValueError as exc:
+        if str(exc)!='SESSION_PERIOD':
+            raise
+    else:
+        raise ValueError('SESSION_MAPPING_GATE')
+    receipt={'schema':1,'scope':'SYNTHETIC_ONLY','protocol':'explicit-session-map-v1',
+             'market_member_reads':0,'holdout_evaluation':'NOT_PERFORMED',
+             'sessions':3,'outside':7,'bars_30m':counts}
+    raw=json.dumps(receipt,sort_keys=True).encode('utf-8')
+    dest=parent/SESSION_MAP_RECEIPT
+    atomic(dest,raw)
+    with dest.open('rb') as f:
+        if f.read(16385)!=raw:
+            raise ValueError('SESSION_MAPPING_SAVE_FAILED')
+    return receipt
+
+
 # A fixed, local acceptance suite once per installed release.
 DIAG_FILE='runner_diagnostics.local.json'
 DIAG_LIMIT=16384
@@ -1490,6 +1590,7 @@ DIAG_STEPS=(('zip','人工ZIP・期間制限'),('parquet','既存Parquet環境')
             ('checkpoint','人工研究チェックポイント'),
             ('catalog','保存済みZIP目録・現行ファイル属性'),
             ('horizons','人工1・5・15・30分足集計'),
+            ('session_map','人工取引セッション・UTC時刻対応'),
             ('quality','保存済み月別選択の再現確認'))
 DIAG_CODES=('PASS','SKIP_NOT_CONFIGURED','FAIL_TIMEOUT','FAIL_IO','FAIL_VALIDATION','FAIL_REPRODUCIBILITY','FAIL_INTERNAL')
 
@@ -1559,6 +1660,7 @@ def diagnostic_run(parent,version,notify=lambda *_:None):
         'checkpoint':check_checkpoint,
         'catalog':lambda:load_market_candidates(parent),
         'horizons':lambda:synthetic_horizon_checkpoint(parent),
+        'session_map':lambda:synthetic_session_mapping_checkpoint(parent),
         'quality':lambda:diagnostic_quality(parent),
     }
     rows=[]
