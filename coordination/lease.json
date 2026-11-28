@@ -1,15 +1,12 @@
 {
-  "claim_pr": 43,
-  "expires_utc": "2026-11-28T08:47:40.005838+00:00",
+  "expires_utc": null,
   "last_claim_pr": 43,
-  "last_owner": "ctl-runner-pilot-5adc9bf5b8bda48a571c4c21caad390d",
+  "last_owner": "ctl-runner-pilot-5f99b50c4067acffcc34a7af9db6c7bc",
   "last_result_commit": "67dc316a9a58556f8a98a2e4a6bc99a2cac59acb",
   "last_run_status": "Operational dual-guard pilot; no research or holdout access",
-  "owner": "ctl-runner-pilot-5f99b50c4067acffcc34a7af9db6c7bc",
-  "released_utc": "2026-11-28T08:36:53.557821+00:00",
+  "owner": null,
+  "released_utc": "2026-11-28T08:37:47.661084+00:00",
   "schema_version": 1,
-  "status": "active",
-  "task_ids": [
-    "CTL-001"
-  ]
+  "status": "idle",
+  "task_ids": []
 }
