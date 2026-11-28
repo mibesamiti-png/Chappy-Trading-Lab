@@ -1582,6 +1582,146 @@ def synthetic_session_mapping_checkpoint(parent):
     return receipt
 
 
+# Calendar metadata only. The fixed projection excludes market-derived columns.
+CALENDAR_COLUMNS=('date','expected_minutes','open_utc','close_utc','utc_offset_hours')
+CALENDAR_FIRST='2022-03-07'
+CALENDAR_LAST='2025-12-31'
+CALENDAR_MAX=1500
+CALENDAR_RECEIPT='development_calendar.local.json'
+
+
+def calendar_authorizer(action,arg1,arg2,database,source):
+    if action==sqlite3.SQLITE_SELECT and source is None:
+        return sqlite3.SQLITE_OK
+    if action==sqlite3.SQLITE_READ and database=='main' and source is None and arg1=='calendar' and arg2 in CALENDAR_COLUMNS:
+        return sqlite3.SQLITE_OK
+    return sqlite3.SQLITE_DENY
+
+
+def calendar_query(db):
+    db.execute('PRAGMA query_only=ON')
+    db.execute('PRAGMA trusted_schema=OFF')
+    ordinary={r[1] for r in db.execute('PRAGMA main.table_list') if r[0]=='main' and r[2]=='table'}
+    if 'calendar' not in ordinary:
+        raise ValueError('CALENDAR_SCHEMA')
+    cols={r[1] for r in db.execute('PRAGMA main.table_xinfo("calendar")') if r[6]==0}
+    if not set(CALENDAR_COLUMNS)<=cols:
+        raise ValueError('CALENDAR_SCHEMA')
+    db.set_authorizer(calendar_authorizer)
+    rows=db.execute('SELECT date,expected_minutes,open_utc,close_utc,utc_offset_hours '
+                    'FROM main.calendar WHERE date COLLATE BINARY BETWEEN ? AND ? '
+                    'ORDER BY date COLLATE BINARY LIMIT 1501',(CALENDAR_FIRST,CALENDAR_LAST)).fetchall()
+    if not 1<=len(rows)<=CALENDAR_MAX:
+        raise ValueError('CALENDAR_ROW_LIMIT')
+    return rows
+
+
+def calendar_clock(value,day):
+    # Columns explicitly declare UTC. Accept exact same-day timestamps or
+    # clock-only strings, with optional zero seconds and UTC suffix only.
+    if type(value) is not str:
+        raise ValueError('CALENDAR_CLOCK')
+    match=re.fullmatch(r'(?:(\d{4}-\d{2}-\d{2})[ T])?(\d{2}):(\d{2})(?::00(?:\.0{1,6})?)?(?:Z|\+00:00)?',value)
+    if not match or match[1] not in (None,day):
+        raise ValueError('CALENDAR_CLOCK')
+    h,m=int(match[2]),int(match[3])
+    if h>23 or m>59:
+        raise ValueError('CALENDAR_CLOCK')
+    return h*60+m
+
+
+def calendar_normalize(rows):
+    sessions=[]
+    previous=''
+    if not 1<=len(rows)<=CALENDAR_MAX:
+        raise ValueError('CALENDAR_ROW_LIMIT')
+    for day,duration,opened,closed,offset in rows:
+        session_day_base(day)
+        if not CALENDAR_FIRST<=day<=CALENDAR_LAST or day<=previous:
+            raise ValueError('CALENDAR_DATE')
+        previous=day
+        if type(duration) is not int or not 0<=duration<=390:
+            raise ValueError('CALENDAR_DURATION')
+        if duration==0:
+            if opened not in (None,'') or closed not in (None,''):
+                raise ValueError('CALENDAR_CLOSED_CLOCK')
+            continue
+        if type(offset) not in (int,float) or offset not in (-5,-4):
+            raise ValueError('CALENDAR_OFFSET')
+        start=calendar_clock(opened,day)
+        end=calendar_clock(closed,day)
+        minutes=int(offset*60)
+        if start!=570-minutes or end-start!=duration:
+            raise ValueError('CALENDAR_CLOCK_MISMATCH')
+        sessions.append([day,minutes,duration])
+    if not sessions:
+        raise ValueError('CALENDAR_EMPTY')
+    return sessions
+
+
+def calendar_index_checkpoint(parent):
+    parent=local_folder(str(parent))
+    with (parent/'existing_index_column_map.local.json').open('rb') as f:
+        raw=f.read(INDEX_MAP_LIMIT+1)
+    if len(raw)>INDEX_MAP_LIMIT:
+        raise ValueError('CALENDAR_MAP_LIMIT')
+    mapping=json.loads(raw)
+    if (type(mapping) is not dict or mapping.get('schema')!=1 or
+            mapping.get('scope')!='LOCAL_COLUMN_MAP_ONLY' or mapping.get('research_access')!='LOCKED' or
+            mapping.get('market_member_reads')!=0 or mapping.get('application_table_queries')!=0):
+        raise ValueError('CALENDAR_MAP_INVALID')
+    path,before=index_file_metadata(mapping['index_source'])
+    if before[2]!=mapping['index_size'] or before[3]!=mapping['index_mtime_ns']:
+        raise ValueError('CALENDAR_STALE')
+    db=sqlite3.connect(path.as_uri()+'?mode=ro&immutable=1',uri=True,timeout=1)
+    try:
+        sessions=calendar_normalize(calendar_query(db))
+    finally:
+        db.close()
+    if index_file_metadata(str(path))[1]!=before:
+        raise ValueError('CALENDAR_STALE')
+    receipt={'schema':1,'scope':'LOCAL_CALENDAR_METADATA','protocol':'indexed-session-calendar-v1',
+             'index_map_sha256':hashlib.sha256(raw).hexdigest(),'date_start':CALENDAR_FIRST,
+             'date_end':CALENDAR_LAST,'sessions':sessions,'market_member_reads':0,
+             'calendar_completeness':'UNVERIFIED','physical_period_isolation':'UNVERIFIED',
+             'holdout_evaluation':'NOT_PERFORMED','research_access':'LOCKED'}
+    payload=json.dumps(receipt,sort_keys=True).encode('utf-8')
+    dest=parent/CALENDAR_RECEIPT
+    atomic(dest,payload)
+    with dest.open('rb') as f:
+        if f.read(131073)!=payload:
+            raise ValueError('CALENDAR_SAVE_FAILED')
+    return receipt
+
+
+def synthetic_calendar_probe():
+    # No external calendar or files. Reserved rows and other columns are
+    # deliberately invalid and must not reach the result.
+    db=sqlite3.connect(':memory:')
+    try:
+        db.execute('CREATE TABLE calendar(date TEXT,expected_minutes INTEGER,open_utc TEXT,close_utc TEXT,utc_offset_hours REAL,observed_tickers INTEGER)')
+        db.executemany('INSERT INTO calendar VALUES(?,?,?,?,?,?)',[
+            ('2025-01-06',390,'2025-01-06T14:30:00+00:00','21:00',-5,999),
+            ('2025-07-07',0,None,None,None,999),
+            ('2025-07-08',210,'13:30:00Z','2025-07-08 17:00:00',-4,999),
+            ('2026-01-01',-999,'INVALID','INVALID',0,999)])
+        sessions=calendar_normalize(calendar_query(db))
+        if sessions!=[['2025-01-06',-300,390],['2025-07-08',-240,210]]:
+            raise ValueError('CALENDAR_SYNTHETIC_MISMATCH')
+        try:
+            db.execute('SELECT observed_tickers FROM calendar').fetchall()
+        except sqlite3.DatabaseError:
+            pass
+        else:
+            raise ValueError('CALENDAR_AUTHORIZER_FAILED')
+    finally:
+        db.close()
+    rows=[(session_day_base('2025-07-08')+810,10,12,9,11,2)]
+    mapped=map_session_rows(sessions,rows)
+    if mapped['outside']!=0 or mapped['sessions'][1]['rows']!=[(0,10,12,9,11,2)]:
+        raise ValueError('CALENDAR_MAPPING_FAILED')
+
+
 # A fixed, local acceptance suite once per installed release.
 DIAG_FILE='runner_diagnostics.local.json'
 DIAG_LIMIT=16384
@@ -1591,6 +1731,8 @@ DIAG_STEPS=(('zip','人工ZIP・期間制限'),('parquet','既存Parquet環境')
             ('catalog','保存済みZIP目録・現行ファイル属性'),
             ('horizons','人工1・5・15・30分足集計'),
             ('session_map','人工取引セッション・UTC時刻対応'),
+            ('calendar_fixture','人工カレンダー・限定SQL検査'),
+            ('calendar_index','既存索引の2025年以前カレンダー'),
             ('quality','保存済み月別選択の再現確認'))
 DIAG_CODES=('PASS','SKIP_NOT_CONFIGURED','FAIL_TIMEOUT','FAIL_IO','FAIL_VALIDATION','FAIL_REPRODUCIBILITY','FAIL_INTERNAL')
 
@@ -1661,6 +1803,8 @@ def diagnostic_run(parent,version,notify=lambda *_:None):
         'catalog':lambda:load_market_candidates(parent),
         'horizons':lambda:synthetic_horizon_checkpoint(parent),
         'session_map':lambda:synthetic_session_mapping_checkpoint(parent),
+        'calendar_fixture':synthetic_calendar_probe,
+        'calendar_index':lambda:calendar_index_checkpoint(parent),
         'quality':lambda:diagnostic_quality(parent),
     }
     rows=[]
@@ -1674,11 +1818,13 @@ def diagnostic_run(parent,version,notify=lambda *_:None):
                 raise FileNotFoundError()
             if key=='catalog' and not (parent/'market_zip_catalog.local.json').is_file():
                 raise FileNotFoundError()
+            if key=='calendar_index' and not (parent/'existing_index_column_map.local.json').is_file():
+                raise FileNotFoundError()
             if key=='quality' and not (parent/'market_monthly_quality_selection.local.json').is_file():
                 raise FileNotFoundError()
             actions[key]()
         except FileNotFoundError:
-            status='SKIP_NOT_CONFIGURED' if key in ('parquet','ohlcv','checkpoint','catalog','quality') else 'FAIL_IO'
+            status='SKIP_NOT_CONFIGURED' if key in ('parquet','ohlcv','checkpoint','catalog','quality','calendar_index') else 'FAIL_IO'
         except subprocess.TimeoutExpired:
             status='FAIL_TIMEOUT'
         except (OSError,subprocess.CalledProcessError):
