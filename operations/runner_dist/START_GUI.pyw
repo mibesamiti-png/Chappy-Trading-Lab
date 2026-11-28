@@ -16,6 +16,7 @@ import subprocess
 import threading
 import queue
 import time
+import math
 import urllib.request
 import urllib.error
 from app_version import VERSION
@@ -1722,6 +1723,93 @@ def synthetic_calendar_probe():
         raise ValueError('CALENDAR_MAPPING_FAILED')
 
 
+# Pure descriptive statistics, no market reader, prediction or trade signals.
+STATS_RECEIPT='synthetic_descriptive_statistics.local.json'
+
+
+def describe_session_horizon(sessions,horizon):
+    # Input sessions are independent (length, rows) pairs in normalized
+    # integer price units. Weight complete bars/pairs equally, not dates.
+    if type(sessions) not in (list,tuple) or not 1<=len(sessions)<=366:
+        raise ValueError('STATS_SESSION_LIMIT')
+    returns=[]
+    bars_count=0
+    volume_sum=0
+    missing_windows=0
+    tail_minutes=0
+    possible_pairs=0
+    positive=negative=zero=0
+    for length,rows in sessions:
+        result=aggregate_session_rows(rows,length,horizon)
+        bars=result['bars']
+        bars_count+=len(bars)
+        missing_windows+=result['missing_windows']
+        tail_minutes+=result['tail_minutes']
+        possible_pairs+=max(0,length//horizon-1)
+        previous=None
+        for bar in bars:
+            if any(v>10**18 for v in bar[1:]):
+                raise ValueError('STATS_VALUE_LIMIT')
+            volume_sum+=bar[5]
+            if previous is not None and bar[0]-previous[0]==horizon:
+                delta=bar[4]-previous[4]
+                returns.append(delta/previous[4])
+                positive+=delta>0
+                negative+=delta<0
+                zero+=delta==0
+            previous=bar
+    n=len(returns)
+    mean=math.fsum(returns)/n if n else None
+    return {'complete_bars':bars_count,'missing_windows':missing_windows,
+            'tail_minutes':tail_minutes,'possible_pairs':possible_pairs,
+            'observed_pairs':n,'unobserved_pairs':possible_pairs-n,
+            'positive':positive,'negative':negative,'zero':zero,
+            'mean_return':mean,
+            'mean_absolute_return':math.fsum(abs(x) for x in returns)/n if n else None,
+            'sample_return_sd':math.sqrt(math.fsum((x-mean)**2 for x in returns)/(n-1)) if n>1 else None,
+            'volume_sum':volume_sum,'mean_volume':volume_sum/bars_count if bars_count else None}
+
+
+def synthetic_statistics_checkpoint(parent):
+    parent=local_folder(str(parent))
+    def row(i,c):
+        return (i,c,c,c,c,2)
+    sessions=[(6,[row(i,c) for i,c in ((0,100),(1,110),(2,121),(4,80),(5,80))]),
+              (2,[row(0,200),row(1,180)])]
+    result=describe_session_horizon(sessions,1)
+    expected={'complete_bars':7,'missing_windows':1,'tail_minutes':0,
+              'possible_pairs':6,'observed_pairs':4,'unobserved_pairs':2,
+              'positive':2,'negative':1,'zero':1,'volume_sum':14,'mean_volume':2.0}
+    if any(result[k]!=v for k,v in expected.items()):
+        raise ValueError('STATS_COUNT_MISMATCH')
+    for key,value in [('mean_return',.025),('mean_absolute_return',.075),
+                      ('sample_return_sd',math.sqrt(.0275/3))]:
+        if not math.isclose(result[key],value,rel_tol=1e-12,abs_tol=1e-15):
+            raise ValueError('STATS_VALUE_MISMATCH')
+    full=[(60,[row(i,100) for i in range(60)])]
+    counts={}
+    for horizon in RESEARCH_HORIZONS:
+        flat=describe_session_horizon(full,horizon)
+        counts[str(horizon)]=flat['observed_pairs']
+        if flat['mean_return']!=0 or flat['mean_absolute_return']!=0 or flat['zero']!=flat['observed_pairs']:
+            raise ValueError('STATS_NULL_MISMATCH')
+    if counts!={'1':59,'5':11,'15':3,'30':1}:
+        raise ValueError('STATS_HORIZON_MISMATCH')
+    empty=describe_session_horizon([(5,[])],5)
+    if empty['observed_pairs'] or empty['mean_return'] is not None or empty['mean_volume'] is not None or empty['sample_return_sd'] is not None:
+        raise ValueError('STATS_EMPTY_MISMATCH')
+    receipt={'schema':1,'scope':'SYNTHETIC_ONLY','protocol':'descriptive-adjacent-close-v1',
+             'market_member_reads':0,'holdout_evaluation':'NOT_PERFORMED',
+             'known_fixture':result,'flat_pair_counts':counts}
+    raw=json.dumps(receipt,sort_keys=True,allow_nan=False).encode('utf-8')
+    dest=parent/STATS_RECEIPT
+    atomic(dest,raw)
+    with dest.open('rb') as f:
+        if f.read(16385)!=raw:
+            raise ValueError('STATS_SAVE_FAILED')
+    return receipt
+
+
 # A fixed, local acceptance suite once per installed release.
 DIAG_FILE='runner_diagnostics.local.json'
 DIAG_LIMIT=16384
@@ -1733,6 +1821,7 @@ DIAG_STEPS=(('zip','人工ZIP・期間制限'),('parquet','既存Parquet環境')
             ('session_map','人工取引セッション・UTC時刻対応'),
             ('calendar_fixture','人工カレンダー・限定SQL検査'),
             ('calendar_index','既存索引の2025年以前カレンダー'),
+            ('statistics','人工記述統計・欠損境界検査'),
             ('quality','保存済み月別選択の再現確認'))
 DIAG_CODES=('PASS','SKIP_NOT_CONFIGURED','FAIL_TIMEOUT','FAIL_IO','FAIL_VALIDATION','FAIL_REPRODUCIBILITY','FAIL_INTERNAL')
 
@@ -1805,6 +1894,7 @@ def diagnostic_run(parent,version,notify=lambda *_:None):
         'session_map':lambda:synthetic_session_mapping_checkpoint(parent),
         'calendar_fixture':synthetic_calendar_probe,
         'calendar_index':lambda:calendar_index_checkpoint(parent),
+        'statistics':lambda:synthetic_statistics_checkpoint(parent),
         'quality':lambda:diagnostic_quality(parent),
     }
     rows=[]
