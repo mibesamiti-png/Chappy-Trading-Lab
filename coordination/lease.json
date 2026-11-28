@@ -1,12 +1,15 @@
 {
-  "schema_version": 1,
-  "status": "idle",
-  "owner": null,
-  "task_ids": [],
-  "expires_utc": null,
-  "last_owner": "ctl-20261127-pr6-report",
+  "claim_pr": 41,
+  "expires_utc": "2026-11-28T08:32:46.465966+00:00",
   "last_claim_pr": 6,
+  "last_owner": "ctl-20261127-pr6-report",
   "last_result_commit": "58cc26c854d1644464d40112c40a1ad34d644003",
+  "last_run_status": "Original-session diagnostic saved and read back; required dependencies failed; CTL-001 remains blocked; original checkpoint preserved; no research, holdout access or schedule",
+  "owner": "ctl-runner-pilot-da67ac3f4c0106fb22cde09c814c1cab",
   "released_utc": "2026-11-27T10:18:09Z",
-  "last_run_status": "Original-session diagnostic saved and read back; required dependencies failed; CTL-001 remains blocked; original checkpoint preserved; no research, holdout access or schedule"
+  "schema_version": 1,
+  "status": "active",
+  "task_ids": [
+    "CTL-001"
+  ]
 }
