@@ -10,6 +10,10 @@ import csv
 from datetime import date
 import hashlib
 import importlib.util
+import subprocess
+import threading
+import queue
+from tkinter import messagebox
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog
@@ -280,14 +284,174 @@ def synthetic_probe_checkpoint(path):
     return expected
 
 
+PARQUET_VERSION = '26.0.1'
+PARQUET_WORKER = r'''
+import io, zipfile, json
+from datetime import date
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+assert pa.__version__ == '26.0.1'
+
+def parquet_bytes(days, values):
+    b = io.BytesIO()
+    pq.write_table(pa.table({'date': pa.array(days, type=pa.date32()),
+                            'value': pa.array(values, type=pa.int64())}), b)
+    return b.getvalue()
+
+def select(archive, name):
+    with zipfile.ZipFile(io.BytesIO(archive), 'r') as z:
+        entries = z.infolist()
+        assert len(entries) == 2
+        assert len({e.filename for e in entries}) == 2
+        entry = z.getinfo(name)
+        assert entry.file_size <= 512 * 1024
+        assert entry.extract_version >= 45
+        with z.open(entry) as stream:
+            raw = stream.read(512 * 1024 + 1)
+        assert len(raw) == entry.file_size
+    table = pq.read_table(io.BytesIO(raw))
+    assert table.schema.names == ['date', 'value']
+    assert table.schema.field('date').type == pa.date32()
+    assert table.schema.field('value').type == pa.int64()
+    assert 0 < table.num_rows <= 4096
+    days = table['date'].to_pylist()
+    if not all(d is not None and date(2000, 1, 1) <= d < date(2026, 1, 1) for d in days):
+        raise ValueError('PERIOD_LOCKED')
+    values = table['value'].to_pylist()
+    assert all(v is not None for v in values)
+    return (len(values), sum(values))
+
+def archive(days, values):
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, 'w', allowZip64=True, compression=zipfile.ZIP_STORED) as z:
+        with z.open('synthetic/selected.parquet', 'w', force_zip64=True) as f:
+            f.write(parquet_bytes(days, values))
+        z.writestr('synthetic/unused.parquet', b'not parquet')
+    return b.getvalue()
+
+assert select(archive([date(2025, 1, 2), date(2025, 12, 31)], [3, 7]),
+              'synthetic/selected.parquet') == (2, 10)
+try:
+    select(archive([date(2025, 12, 31), date(2026, 1, 1)], [3, 7]),
+           'synthetic/selected.parquet')
+except ValueError as e:
+    assert str(e) == 'PERIOD_LOCKED'
+else:
+    raise RuntimeError('PERIOD_GATE_FAILED')
+print(json.dumps({'scope': 'SYNTHETIC_ONLY', 'version': pa.__version__,
+                  'rows': 2, 'sum': 10, 'zip64_member': True, 'period_gate': 'PASS'}))
+'''
+
+
+def parquet_env():
+    # No inherited GitHub credentials, Python injection, or pip index overrides.
+    allowed = {'SYSTEMROOT', 'WINDIR', 'SYSTEMDRIVE', 'COMSPEC', 'TEMP', 'TMP',
+               'TMPDIR', 'PATH', 'PATHEXT', 'HOME', 'USERPROFILE', 'LOCALAPPDATA',
+               'APPDATA', 'LANG', 'LC_ALL', 'PROGRAMDATA'}
+    env = {k: v for k, v in os.environ.items() if k.upper() in allowed}
+    env['PIP_CONFIG_FILE'] = os.devnull
+    return env
+
+
+def parquet_command(executable, args, cwd, timeout, capture=False):
+    completed = subprocess.run([str(executable), '-I', *args], cwd=str(cwd),
+                               env=parquet_env(), stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=timeout, check=True,
+                               creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    return completed.stdout if capture else None
+
+
+def parquet_runtime(parent, install):
+    parent = local_folder(str(parent))
+    target = parent / 'ctl_pyarrow_26_0_1'
+    marker = target / 'ctl-owned.txt'
+    python = target / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+    if not target.exists():
+        if not install:
+            raise ValueError('PARQUET_NOT_INSTALLED')
+        target.mkdir()
+        marker.write_bytes(b'CTL_PYARROW_26_0_1\n')
+    local_folder(str(target))
+    if marker.is_symlink() or not marker.is_file() or marker.stat().st_size != len(b'CTL_PYARROW_26_0_1\n'):
+        raise ValueError('PARQUET_UNOWNED_ENV')
+    if marker.read_bytes() != b'CTL_PYARROW_26_0_1\n':
+        raise ValueError('PARQUET_UNOWNED_ENV')
+    if install:
+        base = Path(sys.executable)
+        if base.name.lower() == 'pythonw.exe':
+            base = base.with_name('python.exe')
+        if not base.is_file():
+            raise ValueError('PARQUET_PYTHON_MISSING')
+        if not python.is_file():
+            parquet_command(base, ['-m', 'venv', '--copies', str(target)], parent, 120)
+        parquet_command(python, ['-m', 'pip', '--isolated', '--disable-pip-version-check',
+                        'install', '--index-url', 'https://pypi.org/simple',
+                        '--only-binary=:all:', '--no-input', '--no-cache-dir',
+                        'pyarrow==' + PARQUET_VERSION], parent, 600)
+    if not python.is_file():
+        raise ValueError('PARQUET_NOT_INSTALLED')
+    raw = parquet_command(python, ['-c', PARQUET_WORKER], parent, 120, capture=True)
+    expected = {'scope': 'SYNTHETIC_ONLY', 'version': PARQUET_VERSION, 'rows': 2,
+                'sum': 10, 'zip64_member': True, 'period_gate': 'PASS'}
+    if len(raw) > 4096 or json.loads(raw) != expected:
+        raise ValueError('PARQUET_BAD_RECEIPT')
+    receipt = parent / 'synthetic_parquet_probe.local.json'
+    payload = json.dumps(expected, sort_keys=True).encode('utf-8')
+    atomic(receipt, payload)
+    with receipt.open('rb') as f:
+        if f.read(4097) != payload:
+            raise ValueError('PARQUET_RECEIPT_MISMATCH')
+    return expected
+
+
 class DataDesktop(UpdateDesktop):
     def __init__(self, *args, **kwargs):
         self.folder_dialog = None
+        self.parquet_busy = False
+        self.parquet_results = queue.Queue()
         super().__init__(*args, **kwargs)
         self.folder_btn = ttk.Button(self.link_btn.master, text='研究データ設定', command=self.configure_folders)
         self.folder_btn.pack(side='left', padx=3)
         self.probe_btn = ttk.Button(self.link_btn.master, text='研究基盤テスト', command=self.run_research_probe)
         self.probe_btn.pack(side='left', padx=3)
+        self.parquet_btn = ttk.Button(self.link_btn.master, text='Parquet環境', command=self.configure_parquet)
+        self.parquet_btn.pack(side='left', padx=3)
+
+    def configure_parquet(self):
+        if self.closing or self.parquet_busy or self.folder_dialog is not None:
+            return
+        parent = Path(self.path).parent
+        install = messagebox.askyesnocancel('Parquet専用環境', 'はい：専用環境へPyArrow 26.0.1をインストールして人工テスト\nいいえ：既存の専用環境で人工テストのみ\nキャンセル：何もしない\n実市場ZIPは開きません。', parent=self.root)
+        if install is None:
+            return
+        self.parquet_busy = True
+        self.parquet_btn.configure(state='disabled')
+        self.log('Parquet専用環境の処理を開始しました。')
+        def run():
+            try:
+                parquet_runtime(parent, install)
+                result = 'Parquet人工テスト成功：専用環境・ZIP64メンバー・期間制限・保存再読込。'
+            except subprocess.TimeoutExpired:
+                result = 'Parquet処理タイムアウト。専用環境から再試行できます。'
+            except subprocess.CalledProcessError:
+                result = 'Parquet導入または人工テスト失敗。Python環境・通信・空き容量を確認してください。'
+            except (OSError, ValueError, RuntimeError, TypeError, UnicodeError):
+                result = 'Parquet専用環境または保存確認に失敗しました。'
+            self.parquet_results.put(result)
+        threading.Thread(target=run, daemon=False).start()
+        self.root.after(250, self.poll_parquet)
+
+    def poll_parquet(self):
+        try:
+            result = self.parquet_results.get_nowait()
+        except queue.Empty:
+            self.root.after(250, self.poll_parquet)
+            return
+        self.parquet_busy = False
+        self.parquet_btn.configure(state='normal')
+        self.log(result + ' 登録市場ZIPは未読。')
 
     def run_research_probe(self):
         if self.closing or self.folder_dialog is not None:
@@ -305,7 +469,7 @@ class DataDesktop(UpdateDesktop):
         self.log('PyArrow：' + ('候補あり（動作未検証）' if found else '未検出') + '。登録市場ZIPは未読。')
 
     def update_tick(self):
-        if self.folder_dialog is not None:
+        if self.folder_dialog is not None or self.parquet_busy:
             return False
         return super().update_tick()
 
