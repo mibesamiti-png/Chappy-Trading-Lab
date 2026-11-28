@@ -7,6 +7,7 @@ import re
 import io
 import zipfile
 import struct
+import sqlite3
 import csv
 from datetime import date
 import hashlib
@@ -946,6 +947,82 @@ def synthetic_run_execute(parent, notify=lambda *_: None):
     return state
 
 
+# Existing research index schema only. Never query application tables.
+INDEX_NAME = 'hf_light_index.sqlite'
+INDEX_MAX_BYTES = 64*1024**2
+INDEX_MAX_OBJECTS = 64
+INDEX_RECEIPT_LIMIT = 32768
+
+
+def index_file_metadata(value):
+    path=Path(value)
+    if path.name.lower()!=INDEX_NAME:
+        raise ValueError('INDEX_NAME_REQUIRED')
+    local_folder(str(path.parent))
+    info=path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or
+            getattr(info,'st_file_attributes',0)&0x400 or not 100<=info.st_size<=INDEX_MAX_BYTES):
+        raise ValueError('INDEX_FILE_REFUSED')
+    # An immutable SQLite reader must not silently ignore a live journal/WAL.
+    for suffix in ('-wal','-shm','-journal'):
+        try:
+            Path(str(path)+suffix).lstat()
+        except FileNotFoundError:
+            continue
+        raise ValueError('INDEX_SIDECAR_REFUSED')
+    return path,(info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns)
+
+
+def index_schema_authorizer(action, arg1, arg2, database, source):
+    if action==sqlite3.SQLITE_SELECT and source is None:
+        return sqlite3.SQLITE_OK
+    if (action==sqlite3.SQLITE_READ and arg1 in ('sqlite_master','sqlite_schema')
+            and arg2 in ('name','type') and database=='main' and source is None):
+        return sqlite3.SQLITE_OK
+    return sqlite3.SQLITE_DENY
+
+
+def existing_index_probe(parent,value):
+    parent=local_folder(str(parent))
+    path,before=index_file_metadata(value)
+    connection=sqlite3.connect(path.as_uri()+'?mode=ro&immutable=1',uri=True,timeout=1)
+    try:
+        connection.execute('PRAGMA query_only=ON')
+        connection.execute('PRAGMA trusted_schema=OFF')
+        connection.set_authorizer(index_schema_authorizer)
+        rows=connection.execute(
+            "SELECT name,type FROM main.sqlite_schema WHERE type IN ('table','view') ORDER BY name LIMIT 65"
+        ).fetchall()
+    finally:
+        connection.close()
+    if index_file_metadata(str(path))[1]!=before:
+        raise ValueError('INDEX_CHANGED')
+    if not 1<=len(rows)<=INDEX_MAX_OBJECTS:
+        raise ValueError('INDEX_SCHEMA_LIMIT')
+    objects=[]
+    for name,kind in rows:
+        if (type(name) is not str or not 1<=len(name)<=128 or
+                any(ord(c)<32 for c in name) or kind not in ('table','view')):
+            raise ValueError('INDEX_SCHEMA_REFUSED')
+        # Do not disclose explicitly reserved object names.
+        if not re.search(r'2026|holdout|封印',name,re.I):
+            objects.append({'name':name,'kind':kind})
+    receipt={'schema':1,'scope':'LOCAL_SCHEMA_ONLY','source':str(path),
+             'size':before[2],'mtime_ns':before[3],
+             'objects':objects,'reserved_objects_omitted':len(rows)-len(objects),
+             'application_table_queries':0,'market_member_reads':0,
+             'development_period':'UNVERIFIED','research_access':'LOCKED'}
+    raw=json.dumps(receipt,ensure_ascii=False,sort_keys=True).encode('utf-8')
+    if len(raw)>INDEX_RECEIPT_LIMIT:
+        raise ValueError('INDEX_RECEIPT_LIMIT')
+    dest=parent/'existing_research_index.local.json'
+    atomic(dest,raw)
+    with dest.open('rb') as f:
+        if f.read(INDEX_RECEIPT_LIMIT+1)!=raw:
+            raise ValueError('INDEX_RECEIPT_MISMATCH')
+    return receipt
+
+
 class DataDesktop(UpdateDesktop):
     def __init__(self, *args, **kwargs):
         self.folder_dialog = None
@@ -1318,6 +1395,20 @@ class DataDesktop(UpdateDesktop):
                 output.set('\n'.join(lines) or '保存場所未指定')
             except (OSError, ValueError) as exc:
                 output.set('確認できません：' + registration_error(exc))
+        def inspect_existing_index():
+            chosen=filedialog.askopenfilename(parent=dialog,title='既存のhf_light_index.sqliteを選択',
+                                              filetypes=[('研究索引','hf_light_index.sqlite'),('SQLite','*.sqlite')])
+            if not chosen:
+                return
+            if not messagebox.askyesno('既存研究索引','既存SQLite索引のテーブル・ビュー名だけを読みます。研究データの行、2026年の集計や市場ZIPは読みません。元ファイルは変更しません。',parent=dialog):
+                return
+            try:
+                result=existing_index_probe(Path(self.path).parent,chosen)
+                names=' / '.join(obj['name'] for obj in result['objects'])
+                output.set('既存索引：参照成功（構造のみ）\nテーブル・ビュー：'+names+'\n研究期間：未証明・利用ロック中')
+                self.log('既存研究索引の構造確認・保存再読込成功。データ行未照会・研究利用ロック中。')
+            except (OSError,ValueError,sqlite3.Error,TypeError,UnicodeError):
+                output.set('既存索引を確認できません。正しいファイル、アクセス権、使用中のアプリを確認してください。')
         def close():
             self.folder_dialog = None
             dialog.destroy()
@@ -1338,6 +1429,7 @@ class DataDesktop(UpdateDesktop):
         bar = ttk.Frame(panel)
         bar.pack(side='bottom', fill='x')
         ttk.Button(bar, text='登録状態を確認', command=inspect).pack(side='left')
+        ttk.Button(bar, text='既存索引確認', command=inspect_existing_index).pack(side='left',padx=5)
         ttk.Button(bar, text='保存', command=save).pack(side='right')
         ttk.Button(bar, text='キャンセル', command=close).pack(side='right', padx=5)
         dialog.protocol('WM_DELETE_WINDOW', close)
