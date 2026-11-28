@@ -6,6 +6,7 @@ import stat
 import re
 import io
 import zipfile
+import struct
 import csv
 from datetime import date
 import hashlib
@@ -408,11 +409,165 @@ def parquet_runtime(parent, install):
     return expected
 
 
+# Real ZIP catalog: metadata only, no member/local-header reads.
+CATALOG_MAX_BYTES = 128 * 1024**3
+CATALOG_MAX_DIRECTORY = 32 * 1024**2
+CATALOG_MAX_ENTRIES = 50000
+CATALOG_MAX_TOTAL_ENTRIES = 100000
+CATALOG_MAX_RECEIPT = 16 * 1024**2
+
+
+def catalog_bounds(f):
+    f.seek(0, 2)
+    size = f.tell()
+    if not 22 <= size <= CATALOG_MAX_BYTES:
+        raise ValueError('CATALOG_SIZE')
+    f.seek(size - 22)
+    end = f.read(22)
+    sig, disk, cd_disk, n_disk, n, cd_size, cd_offset, comment = struct.unpack('<4s4H2IH', end)
+    if sig != b'PK\x05\x06' or comment or disk or cd_disk:
+        raise ValueError('CATALOG_END_UNSUPPORTED')
+    end_offset = size - 22
+    zip64 = n == 0xffff or n_disk == 0xffff or cd_size == 0xffffffff or cd_offset == 0xffffffff
+    # In an ordinary ZIP, the declared directory must end exactly at EOCD.
+    # In a ZIP64 archive the locator is at a fixed offset before EOCD.
+    if zip64 or cd_offset + cd_size != end_offset:
+        if size < 98:
+            raise ValueError('CATALOG_ZIP64')
+        f.seek(end_offset - 20)
+        locator = f.read(20)
+        sig, disk, record, disks = struct.unpack('<4sIQI', locator)
+        if sig != b'PK\x06\x07' or disk or disks != 1 or record != end_offset - 76:
+            raise ValueError('CATALOG_ZIP64')
+        f.seek(record)
+        sig, length, made, needed, disk, cd_disk, nd, count, length_cd, offset_cd = struct.unpack('<4sQ2H2I4Q', f.read(56))
+        if sig != b'PK\x06\x06' or length != 44 or disk or cd_disk or nd != count:
+            raise ValueError('CATALOG_ZIP64')
+        for old, new, sentinel in ((n_disk, nd, 0xffff), (n, count, 0xffff),
+                                    (cd_size, length_cd, 0xffffffff), (cd_offset, offset_cd, 0xffffffff)):
+            if old != sentinel and old != new:
+                raise ValueError('CATALOG_ZIP64')
+        n, n_disk, cd_size, cd_offset = count, nd, length_cd, offset_cd
+        end_offset = record
+        zip64 = True
+    if n != n_disk or not 1 <= n <= CATALOG_MAX_ENTRIES or not 46*n <= cd_size <= CATALOG_MAX_DIRECTORY:
+        raise ValueError('CATALOG_DIRECTORY_LIMIT')
+    if cd_offset + cd_size != end_offset:
+        raise ValueError('CATALOG_DIRECTORY_OFFSET')
+    return size, cd_offset, n, zip64
+
+
+class CatalogView:
+    """Seekable view of the original file: refuse any read outside the central directory/tail."""
+    def __init__(self, file, lower, upper):
+        self.file, self.lower, self.upper = file, lower, upper
+
+    def seek(self, offset, whence=0):
+        return self.file.seek(offset, whence)
+
+    def tell(self):
+        return self.file.tell()
+
+    def read(self, count=-1):
+        pos = self.tell()
+        if count == -1:
+            count = self.upper - pos
+        if pos < self.lower or count < 0 or pos + count > self.upper:
+            raise ValueError('CATALOG_PAYLOAD_READ_REFUSED')
+        return self.file.read(count)
+
+    def seekable(self):
+        return True
+
+
+def catalog_file(value):
+    path = local_zip(value)
+    before = path.stat()
+    with path.open('rb') as f:
+        opened = os.fstat(f.fileno())
+        def identity(info):
+            return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+        if identity(before) != identity(opened):
+            raise ValueError('CATALOG_CHANGED')
+        size, start, count, is64 = catalog_bounds(f)
+        if size != opened.st_size:
+            raise ValueError('CATALOG_CHANGED')
+        # ZipFile constructor only, never open/read/extract a member.
+        with zipfile.ZipFile(CatalogView(f, start, size), 'r') as z:
+            if z.start_dir != start or len(z.infolist()) != count:
+                raise ValueError('CATALOG_COUNT')
+            seen = set()
+            candidates = []
+            locked = 0
+            other = 0
+            for item in z.infolist():
+                name = item.filename
+                parts = name.rstrip('/').split('/')
+                if (not name or len(name) > 1024 or '\\' in name or
+                        any(not p or p in ('.', '..') or ':' in p for p in parts) or
+                        any(ord(c) < 32 for c in name) or item.orig_filename != name):
+                    raise ValueError('CATALOG_UNSAFE_NAME')
+                key = name.rstrip('/').casefold()
+                if key in seen:
+                    raise ValueError('CATALOG_DUPLICATE')
+                seen.add(key)
+                mode = (item.external_attr >> 16) & 0xffff
+                if (item.flag_bits & 1 or stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)
+                        or item.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+                        or item.header_offset < 0 or item.header_offset >= start
+                        or item.compress_size < 0 or item.compress_size > start - item.header_offset):
+                    raise ValueError('CATALOG_UNSUPPORTED_ENTRY')
+                if re.search(r'2026|holdout|封印', name, re.I):
+                    locked += 1
+                    continue
+                if item.is_dir() or not name.lower().endswith('.parquet'):
+                    other += 1
+                    continue
+                # A filename or size never authorizes research access.
+                candidates.append({'member': name, 'size': item.file_size,
+                                   'compressed': item.compress_size, 'crc32': item.CRC,
+                                   'access': 'LOCKED_UNVERIFIED_PERIOD'})
+        if identity(os.fstat(f.fileno())) != identity(opened) or identity(path.stat()) != identity(opened):
+            raise ValueError('CATALOG_CHANGED')
+    return {'archive': str(path), 'size': size, 'mtime_ns': opened.st_mtime_ns,
+            'zip64_directory': is64, 'entries': count, 'locked_names': locked,
+            'other': other, 'parquet_candidates': candidates}
+
+
+def catalog_registered(parent):
+    parent = local_folder(str(parent))
+    config = read_folders(parent / 'research_folders.local.json')
+    paths = zip_paths(config.get('market_zips', []))
+    if not paths:
+        raise ValueError('CATALOG_NO_ZIP')
+    results = []
+    total = 0
+    for path in paths:
+        result = catalog_file(path)
+        total += result['entries']
+        if total > CATALOG_MAX_TOTAL_ENTRIES:
+            raise ValueError('CATALOG_TOTAL_LIMIT')
+        results.append(result)
+    receipt = {'schema': 1, 'scope': 'LOCAL_METADATA_ONLY', 'member_reads': 0,
+               'research_access': 'LOCKED', 'archives': results}
+    raw = json.dumps(receipt, ensure_ascii=False, sort_keys=True).encode('utf-8')
+    if len(raw) > CATALOG_MAX_RECEIPT:
+        raise ValueError('CATALOG_RECEIPT_LIMIT')
+    dest = parent / 'market_zip_catalog.local.json'
+    atomic(dest, raw)
+    with dest.open('rb') as f:
+        if f.read(CATALOG_MAX_RECEIPT + 1) != raw:
+            raise ValueError('CATALOG_RECEIPT_MISMATCH')
+    return len(results), total, sum(len(a['parquet_candidates']) for a in results)
+
+
 class DataDesktop(UpdateDesktop):
     def __init__(self, *args, **kwargs):
         self.folder_dialog = None
         self.parquet_busy = False
         self.parquet_results = queue.Queue()
+        self.catalog_busy = False
+        self.catalog_results = queue.Queue()
         super().__init__(*args, **kwargs)
         self.folder_btn = ttk.Button(self.link_btn.master, text='研究データ設定', command=self.configure_folders)
         self.folder_btn.pack(side='left', padx=3)
@@ -420,9 +575,46 @@ class DataDesktop(UpdateDesktop):
         self.probe_btn.pack(side='left', padx=3)
         self.parquet_btn = ttk.Button(self.link_btn.master, text='Parquet環境', command=self.configure_parquet)
         self.parquet_btn.pack(side='left', padx=3)
+        self.catalog_btn = ttk.Button(self.link_btn.master, text='市場ZIP目録', command=self.run_market_catalog)
+        self.catalog_btn.pack(side='left', padx=3)
+
+    def run_market_catalog(self):
+        if self.closing or self.catalog_busy or self.parquet_busy or self.folder_dialog is not None:
+            return
+        if not messagebox.askyesno('市場ZIP目録', '登録済みZIPの中央ディレクトリ（名前・サイズ等）のみを読みます。\n中身は展開せず、研究利用はロックのままです。\n目録はPC内だけに保存します。実行しますか？', parent=self.root):
+            return
+        parent = Path(self.path).parent
+        self.catalog_busy = True
+        self.catalog_btn.configure(state='disabled')
+        self.log('市場ZIP目録の確認開始。メンバー本体は読みません。')
+        def run():
+            try:
+                result = (True, catalog_registered(parent))
+            except Exception as exc:
+                code = str(exc) if isinstance(exc, ValueError) and re.fullmatch(r'CATALOG_[A-Z0-9_]+', str(exc)) else 'CATALOG_IO_OR_FORMAT'
+                result = (False, code)
+            self.catalog_results.put(result)
+        threading.Thread(target=run, daemon=False).start()
+        self.root.after(250, self.poll_catalog)
+
+    def poll_catalog(self):
+        try:
+            ok, result = self.catalog_results.get_nowait()
+        except queue.Empty:
+            self.root.after(250, self.poll_catalog)
+            return
+        self.catalog_busy = False
+        self.catalog_btn.configure(state='normal')
+        if ok:
+            archives, entries, candidates = result
+            # Detailed counts and names stay on the local GUI, not in the runner log.
+            messagebox.showinfo('市場ZIP目録完了', f'ZIP：{archives}件\n目録：{entries}件\nParquet候補：{candidates}件\n本体読み取り：0件\n研究利用：ロック中\n目録はPC内に保存しました。', parent=self.root)
+            self.log('市場ZIP目録の保存再読込成功。本体未読・研究利用ロック中。')
+        else:
+            self.log('市場ZIP目録失敗：' + result + '。研究利用ロック中。')
 
     def configure_parquet(self):
-        if self.closing or self.parquet_busy or self.folder_dialog is not None:
+        if self.closing or self.parquet_busy or self.catalog_busy or self.folder_dialog is not None:
             return
         parent = Path(self.path).parent
         install = messagebox.askyesnocancel('Parquet専用環境', 'はい：専用環境へPyArrow 26.0.1をインストールして人工テスト\nいいえ：既存の専用環境で人工テストのみ\nキャンセル：何もしない\n実市場ZIPは開きません。', parent=self.root)
@@ -456,7 +648,7 @@ class DataDesktop(UpdateDesktop):
         self.log(result + ' 登録市場ZIPは未読。')
 
     def run_research_probe(self):
-        if self.closing or self.folder_dialog is not None:
+        if self.closing or self.folder_dialog is not None or self.catalog_busy or self.parquet_busy:
             return
         try:
             result = synthetic_probe_checkpoint(Path(self.path).parent / 'synthetic_zip_probe.local.json')
@@ -471,12 +663,12 @@ class DataDesktop(UpdateDesktop):
         self.log('PyArrow：' + ('候補あり（動作未検証）' if found else '未検出') + '。登録市場ZIPは未読。')
 
     def update_tick(self):
-        if self.folder_dialog is not None or self.parquet_busy:
+        if self.folder_dialog is not None or self.parquet_busy or self.catalog_busy:
             return False
         return super().update_tick()
 
     def configure_folders(self):
-        if self.closing or self.folder_dialog is not None:
+        if self.closing or self.folder_dialog is not None or self.catalog_busy or self.parquet_busy:
             return
         config = Path(self.path).parent / 'research_folders.local.json'
         try:
