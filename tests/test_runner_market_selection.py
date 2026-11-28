@@ -1,6 +1,9 @@
 """Artificial selection/checkpoint tests. No registered real data."""
 import ast
 import hashlib
+import io
+import csv
+from datetime import date
 import json
 import os
 from pathlib import Path
@@ -15,9 +18,9 @@ import zipfile
 
 SOURCE=Path(__file__).resolve().parents[1]/'operations/runner_dist/START_GUI.pyw'
 tree=ast.parse(SOURCE.read_text(encoding='utf-8'))
-names={'drive_allowed','local_folder','local_zip','zip_paths','read_folders','catalog_bounds','CatalogView','catalog_file','catalog_registered','load_market_candidates','save_market_selection','auto_market_batch','save_auto_market_batch','plan_read','plan_write','plan_create','plan_step','parquet_env','parquet_command','parquet_runtime','synthetic_ohlcv_checkpoint'}
-nodes=[n for n in tree.body if isinstance(n,(ast.FunctionDef,ast.ClassDef)) and n.name in names or isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and (t.id.startswith('CATALOG_') or t.id in {'ROLES','ZIP_LIMIT','SETTINGS_LIMIT','SELECTION_MAX','PLAN_FILE','PLAN_LIMIT','PARQUET_VERSION','PARQUET_WORKER','OHLCV_WORKER'}) for t in n.targets)]
-scope=dict(Path=Path,os=os,re=re,stat=stat,struct=struct,json=json,zipfile=zipfile,hashlib=hashlib,sys=sys,subprocess=subprocess,atomic=lambda p,b:p.write_bytes(b))
+names={'drive_allowed','local_folder','local_zip','zip_paths','read_folders','catalog_bounds','CatalogView','catalog_file','catalog_registered','load_market_candidates','save_market_selection','auto_market_batch','save_auto_market_batch','plan_read','plan_write','plan_create','plan_step','parquet_env','parquet_command','parquet_runtime','synthetic_ohlcv_checkpoint','synthetic_aggregation','synthetic_run_expected','synthetic_run_read','synthetic_run_write','synthetic_run_execute','probe_zip_catalog','probe_read_member','probe_period_rows','probe_fixture','synthetic_zip_probe','synthetic_probe_checkpoint'}
+nodes=[n for n in tree.body if isinstance(n,(ast.FunctionDef,ast.ClassDef)) and n.name in names or isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and ((t.id.startswith('CATALOG_') or t.id.startswith('SYNTH_RUN_') or t.id.startswith('PROBE_')) or t.id in {'ROLES','ZIP_LIMIT','SETTINGS_LIMIT','SELECTION_MAX','PLAN_FILE','PLAN_LIMIT','PARQUET_VERSION','PARQUET_WORKER','OHLCV_WORKER'}) for t in n.targets)]
+scope=dict(io=io,csv=csv,date=date,Path=Path,os=os,re=re,stat=stat,struct=struct,json=json,zipfile=zipfile,hashlib=hashlib,sys=sys,subprocess=subprocess,atomic=lambda p,b:p.write_bytes(b))
 exec(compile(ast.Module(body=nodes,type_ignores=[]),str(SOURCE),'exec'),scope)
 
 class SelectionTests(unittest.TestCase):
@@ -124,6 +127,30 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(scope['plan_step'](self.root)['next_batch'],1)
         self.assertEqual((self.root/'market_auto_selection.local.json').read_bytes(),saved)
 
+    def test_synthetic_run_resume_and_refuse_invalid(self):
+        from unittest.mock import patch
+        expected=scope['synthetic_run_expected']()
+        def zip_probe(_):
+            return expected['zip_access']
+        def fail(_):
+            raise OSError('artificial interruption')
+        with patch.dict(scope,{'synthetic_probe_checkpoint':zip_probe,'synthetic_ohlcv_checkpoint':fail}):
+            with self.assertRaises(OSError):
+                scope['synthetic_run_execute'](self.root)
+        self.assertEqual(set(scope['synthetic_run_read'](self.root)['results']),{'zip_access'})
+        audit=dict(expected['ohlcv_audit'])
+        period=audit.pop('period_gate')
+        with patch.dict(scope,{'synthetic_probe_checkpoint':fail,'synthetic_ohlcv_checkpoint':lambda _: {'audit':audit,'period_gate':period}}):
+            state=scope['synthetic_run_execute'](self.root)
+        self.assertEqual(state['results'],expected)
+        self.assertEqual(state['status'],'COMPLETE')
+        with patch.dict(scope,{'synthetic_probe_checkpoint':fail,'synthetic_ohlcv_checkpoint':fail,'synthetic_aggregation':fail}):
+            self.assertEqual(scope['synthetic_run_execute'](self.root),state)
+        state['results']['zip_access']['sum']=999
+        scope['synthetic_run_write'](self.root,state)
+        with self.assertRaisesRegex(ValueError,'SYNTH_RUN_INVALID'):
+            scope['synthetic_run_read'](self.root)
+
     def test_real_venv_synthetic_ohlcv(self):
         scope['parquet_runtime'](self.root,True)
         report=scope['synthetic_ohlcv_checkpoint'](self.root)
@@ -131,6 +158,10 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(report['audit']['duplicates'],1)
         self.assertGreaterEqual(report['elapsed_ms'],0)
         self.assertEqual(report,json.loads((self.root/'synthetic_ohlcv_probe.local.json').read_text()))
+        state=scope['synthetic_run_execute'](self.root)
+        self.assertEqual(state['status'],'COMPLETE')
+        self.assertEqual(state['results'],scope['synthetic_run_expected']())
+        self.assertEqual(state['market_member_reads'],0)
 
 if __name__=='__main__':
     unittest.main()
