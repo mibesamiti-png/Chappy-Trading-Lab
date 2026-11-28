@@ -2141,6 +2141,47 @@ def diagnostic_run(parent,version,notify=lambda *_:None):
     return report
 
 
+def install_runner_controls(owner):
+    # Reserve the bottom strip before the expanding log/body receives space.
+    # Keep the base desktop's geometry manager, and never put research buttons
+    # in its already crowded link/update toolbar.
+    root=owner.root
+    packed=root.pack_slaves()
+    gridded=root.grid_slaves()
+    footer=ttk.Frame(root,padding=(8,4,8,6))
+    if gridded:
+        columns,rows=root.grid_size()
+        footer.grid(row=rows,column=0,columnspan=max(1,columns),sticky='ew')
+    elif packed:
+        footer.pack(side='bottom',fill='x',before=packed[0])
+    else:
+        footer.pack(side='bottom',fill='x')
+    controls=ttk.Frame(footer)
+    controls.pack(fill='x')
+    items=(
+        ('folder_btn','研究データ設定',owner.configure_folders),
+        ('probe_btn','研究基盤テスト',owner.run_research_probe),
+        ('ohlcv_btn','OHLCV人工検査',owner.run_ohlcv_probe),
+        ('parquet_btn','Parquet環境',owner.configure_parquet),
+        ('catalog_btn','市場ZIP目録',owner.run_market_catalog),
+        ('selection_btn','銘柄候補',owner.open_market_selection),
+        ('synthetic_run_btn','人工研究実行',owner.run_synthetic_research),
+    )
+    for i,(attr,label,command) in enumerate(items):
+        btn=ttk.Button(controls,text=label,command=command)
+        btn.grid(row=i//4,column=i%4,sticky='ew',padx=2,pady=2)
+        setattr(owner,attr,btn)
+    for column in range(4):
+        controls.columnconfigure(column,weight=1,uniform='research')
+    # A separate full-width row guarantees the report is right-aligned and
+    # does not compete with any of the research or update controls.
+    report_row=ttk.Frame(footer)
+    report_row.pack(fill='x',pady=(4,0))
+    owner.diag_btn=ttk.Button(report_row,text='デバッグ報告',command=owner.open_diagnostics)
+    owner.diag_btn.pack(side='right',padx=2)
+    owner.runner_footer=footer
+
+
 class DataDesktop(UpdateDesktop):
     def __init__(self, *args, **kwargs):
         self.folder_dialog = None
@@ -2149,23 +2190,8 @@ class DataDesktop(UpdateDesktop):
         self.catalog_busy = False
         self.catalog_results = queue.Queue()
         super().__init__(*args, **kwargs)
-        self.folder_btn = ttk.Button(self.link_btn.master, text='研究データ設定', command=self.configure_folders)
-        self.folder_btn.pack(side='left', padx=3)
-        self.probe_btn = ttk.Button(self.link_btn.master, text='研究基盤テスト', command=self.run_research_probe)
-        self.probe_btn.pack(side='left', padx=3)
-        self.ohlcv_btn = ttk.Button(self.link_btn.master, text='OHLCV人工検査', command=self.run_ohlcv_probe)
-        self.ohlcv_btn.pack(side='left', padx=3)
-        self.parquet_btn = ttk.Button(self.link_btn.master, text='Parquet環境', command=self.configure_parquet)
-        self.parquet_btn.pack(side='left', padx=3)
-        self.catalog_btn = ttk.Button(self.link_btn.master, text='市場ZIP目録', command=self.run_market_catalog)
-        self.catalog_btn.pack(side='left', padx=3)
-        self.selection_btn = ttk.Button(self.link_btn.master, text='銘柄候補', command=self.open_market_selection)
-        self.selection_btn.pack(side='left', padx=3)
-        self.synthetic_run_btn = ttk.Button(self.link_btn.master, text='人工研究実行', command=self.run_synthetic_research)
-        self.synthetic_run_btn.pack(side='left', padx=3)
         self.diag_results=queue.Queue()
-        self.diag_btn=ttk.Button(self.link_btn.master,text='デバッグ報告',command=self.open_diagnostics)
-        self.diag_btn.pack(side='right',padx=3)
+        install_runner_controls(self)
         self.root.after(800,self.auto_diagnostics)
 
     def auto_diagnostics(self):
