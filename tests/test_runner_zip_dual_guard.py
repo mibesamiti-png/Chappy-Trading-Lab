@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import tempfile
 from contextlib import closing
 from datetime import datetime, timezone, timedelta
@@ -13,10 +14,10 @@ from pathlib import Path
 import unittest
 SOURCE=Path(__file__).resolve().parents[1]/'operations/runner_dist/START_GUI.pyw'
 tree=ast.parse(SOURCE.read_text(encoding='utf-8'))
-names={'control_queue_summary','dual_contents','dual_local_guard','dual_remote_lease','dual_remote_write','dual_owned','dual_run'}
-constants={'CONTROL_IDS','DUAL_PR','DUAL_HEAD','DUAL_BASE','DUAL_LEASE','DUAL_LEASE_GET','DUAL_QUEUE','DUAL_JOURNAL','DUAL_STATUS_TEXT'}
+names={'control_queue_summary','dual_contents','dual_local_guard','dual_remote_lease','dual_remote_write','dual_owned','dual_run','resume_file','resume_read','resume_db_identity','resume_expected_bars','resume_checkpoint_read','resume_next','resume_do_stage','aggregate_session_rows'}
+constants={'CONTROL_IDS','DUAL_PR','DUAL_HEAD','DUAL_BASE','DUAL_LEASE','DUAL_LEASE_GET','DUAL_QUEUE','DUAL_JOURNAL','DUAL_STATUS_TEXT','RESUME_PR','RESUME_HEAD','RESUME_PROTOCOL','RESEARCH_HORIZONS'}
 nodes=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in names or isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id in constants for t in n.targets)]
-scope=dict(base64=base64,hashlib=hashlib,json=json,os=os,re=re,sqlite3=sqlite3,Path=Path,
+scope=dict(base64=base64,hashlib=hashlib,json=json,os=os,re=re,sqlite3=sqlite3,stat=stat,Path=Path,
            datetime=datetime,timezone=timezone,timedelta=timedelta,local_folder=Path,CONTROL_LAUNCH='a'*32,
            control_evidence=lambda _: 'b'*64,control_checkpoint=lambda *args:'REOPENED',atomic=lambda p,b:p.write_bytes(b))
 exec(compile(ast.Module(body=nodes,type_ignores=[]),str(SOURCE),'exec'),scope)
@@ -47,8 +48,8 @@ class Service:
             return self.contents(self.q)
         if endpoint==scope['DUAL_LEASE_GET']:
             return self.contents(self.lease)
-        if endpoint==scope['DUAL_BASE']+'/pulls/41':
-            return dict(state='open',draft=True,head=dict(sha=scope['DUAL_HEAD'],repo=dict(full_name='mibesamiti-png/Chappy-Trading-Lab')),base=dict(ref='main'))
+        if endpoint in (scope['DUAL_BASE']+'/pulls/41',scope['DUAL_BASE']+'/pulls/43'):
+            return dict(state='open',draft=True,head=dict(sha=scope['RESUME_HEAD'] if endpoint.endswith('/43') else scope['DUAL_HEAD'],repo=dict(full_name='mibesamiti-png/Chappy-Trading-Lab')),base=dict(ref='main'))
         if endpoint==scope['DUAL_BASE']+'/pulls?state=open&per_page=100':
             return []
         if endpoint==scope['DUAL_LEASE'] and method=='PUT':
@@ -57,7 +58,7 @@ class Service:
             self.lease=json.loads(base64.b64decode(body['content']))
             self.writes+=1
             return dict(content=dict(sha=self.contents(self.lease)['sha']))
-        if endpoint==scope['DUAL_BASE']+'/issues/41/comments':
+        if endpoint in (scope['DUAL_BASE']+'/issues/41/comments',scope['DUAL_BASE']+'/issues/43/comments'):
             self.comments+=1
             return dict(id=1)
         raise AssertionError(endpoint)
@@ -80,6 +81,38 @@ class DualGuardTests(unittest.TestCase):
             self.assertEqual(c.execute('SELECT task FROM completed').fetchone(),('CTL-004',))
         self.assertEqual(self.run_pilot(),'PASS')
         self.assertEqual(self.api.writes,2)
+    def test_two_stage_guarded_resume(self):
+        self.assertEqual(self.run_pilot(),'PASS')
+        self.assertEqual(scope['resume_next'](self.p),1)
+        self.assertEqual(scope['dual_run'](self.p,self.db,self.api,resume_stage=1),'PASS')
+        self.assertEqual(scope['resume_next'](self.p),2)
+        original=scope['resume_file'](self.p,1,'checkpoint').read_bytes()
+        with self.assertRaises(ValueError):
+            scope['dual_run'](self.p,self.db,self.api,resume_stage=1)
+        self.assertEqual(scope['dual_run'](self.p,self.db,self.api,resume_stage=2),'PASS')
+        self.assertEqual(scope['resume_next'](self.p),0)
+        self.assertEqual(scope['resume_file'](self.p,1,'checkpoint').read_bytes(),original)
+        self.assertEqual((self.api.writes,self.api.comments,self.api.lease['status']),(6,3,'idle'))
+    def test_resume_refuses_changed_checkpoint(self):
+        self.run_pilot()
+        scope['dual_run'](self.p,self.db,self.api,resume_stage=1)
+        p=scope['resume_file'](self.p,1,'checkpoint')
+        obj=json.loads(p.read_bytes())
+        obj['bars'][0][4]+=1
+        p.write_text(json.dumps(obj))
+        with self.assertRaises(ValueError):
+            scope['resume_next'](self.p)
+        self.assertEqual(self.api.writes,4)
+    def test_resume_refuses_missing_release(self):
+        self.run_pilot()
+        scope['dual_run'](self.p,self.db,self.api,resume_stage=1)
+        p=scope['resume_file'](self.p,1,'journal')
+        obj=json.loads(p.read_bytes())
+        obj['phase']='CHECKPOINT_SAVED'
+        p.write_text(json.dumps(obj))
+        with self.assertRaises(ValueError):
+            scope['resume_next'](self.p)
+        self.assertEqual(self.api.writes,4)
     def test_active_remote_stops_without_write(self):
         self.api.lease.update(status='active',owner='foreign',task_ids=['CTL-001'],expires_utc='2000-01-01T00:00:00Z')
         with self.assertRaises(ValueError):

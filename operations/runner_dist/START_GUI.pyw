@@ -2776,6 +2776,9 @@ def control_plane_text(summary):
 
 # CTL-001 operational pilot only, no scientific computation.
 DUAL_PR=41
+RESUME_PR=43
+RESUME_HEAD='67dc316a9a58556f8a98a2e4a6bc99a2cac59acb'
+RESUME_PROTOCOL='guarded-artificial-two-stage-v1'
 DUAL_HEAD='649c92eb2cb89dc3c0396c714f6bfd46cc9f7a1f'
 DUAL_BASE='/repos/mibesamiti-png/Chappy-Trading-Lab'
 DUAL_LEASE=DUAL_BASE+'/contents/coordination/lease.json'
@@ -2791,8 +2794,8 @@ class DualNoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def dual_api(endpoint,method='GET',body=None,token=None,gh=None):
-    allowed={('GET',x) for x in (DUAL_QUEUE,DUAL_LEASE_GET,DUAL_BASE+'/pulls/41',DUAL_BASE+'/pulls?state=open&per_page=100')}
-    allowed|={('PUT',DUAL_LEASE),('POST',DUAL_BASE+'/issues/41/comments')}
+    allowed={('GET',x) for x in (DUAL_QUEUE,DUAL_LEASE_GET,DUAL_BASE+'/pulls/41',DUAL_BASE+'/pulls/43',DUAL_BASE+'/pulls?state=open&per_page=100')}
+    allowed|={('PUT',DUAL_LEASE),('POST',DUAL_BASE+'/issues/41/comments'),('POST',DUAL_BASE+'/issues/43/comments')}
     if (method,endpoint) not in allowed:
         raise ValueError('DUAL_ENDPOINT')
     data=json.dumps(body,separators=(',',':')).encode('utf-8') if body is not None else None
@@ -2881,14 +2884,125 @@ def dual_remote_write(api,sha,obj):
         raise ValueError('DUAL_WRITE_RESPONSE')
 
 
-def dual_owned(obj,owner,deadline):
+def dual_owned(obj,owner,deadline,claim_pr=DUAL_PR):
     return (obj.get('schema_version')==1 and obj.get('status')=='active' and obj.get('owner')==owner and
-            obj.get('claim_pr')==DUAL_PR and obj.get('task_ids')==['CTL-001'] and obj.get('expires_utc')==deadline)
+            obj.get('claim_pr')==claim_pr and obj.get('task_ids')==['CTL-001'] and obj.get('expires_utc')==deadline)
 
 
-def dual_run(parent,db_path,api,notify=lambda *_:None):
+def resume_file(parent,stage,kind):
+    if type(stage) is not int or stage not in (1,2) or kind not in ('checkpoint','journal'):
+        raise ValueError('RESUME_STAGE')
+    return parent/('guarded_resume_%d_%s.local.json'%(stage,kind))
+
+
+def resume_read(path):
+    if path.is_symlink() or getattr(path.lstat(),'st_file_attributes',0)&0x400 or not path.is_file():
+        raise ValueError('RESUME_PATH')
+    with path.open('rb') as f:
+        raw=f.read(8193)
+    if len(raw)>8192:
+        raise ValueError('RESUME_LIMIT')
+    value=json.loads(raw)
+    if type(value) is not dict:
+        raise ValueError('RESUME_SCHEMA')
+    return value
+
+
+def resume_db_identity(path):
+    p=Path(path)
+    local_folder(str(p.parent))
+    st=p.lstat()
+    if p.name.lower()!='run_guard.sqlite' or not stat.S_ISREG(st.st_mode) or p.is_symlink() or getattr(st,'st_file_attributes',0)&0x400:
+        raise ValueError('RESUME_DB')
+    return {'path':str(p.resolve()),'device':st.st_dev,'inode':st.st_ino}
+
+
+def resume_expected_bars():
+    # Independent formula for fixed invented one-minute rows. Minute 7
+    # is absent, therefore the 5..9 window must not be fabricated.
+    return [[i,100+i,106+i,99+i,105+i,15] for i in range(0,30,5) if i!=5]
+
+
+def resume_checkpoint_read(parent,stage):
+    obj=resume_read(resume_file(parent,stage,'checkpoint'))
+    fields={'schema','protocol','scope','stage','db','bars'} if stage==1 else {'schema','protocol','scope','stage','db','previous_sha','pairs','sum'}
+    if (set(obj)!=fields or obj['schema']!=1 or obj['protocol']!=RESUME_PROTOCOL or obj['scope']!='SYNTHETIC_ONLY' or
+            obj['stage']!=stage or type(obj['db']) is not dict or set(obj['db'])!={'path','device','inode'}):
+        raise ValueError('RESUME_CHECKPOINT')
+    if stage==1 and obj['bars']!=resume_expected_bars():
+        raise ValueError('RESUME_CHECKPOINT')
+    if stage==2:
+        previous=resume_checkpoint_read(parent,1)
+        digest=hashlib.sha256(json.dumps(previous,sort_keys=True).encode('utf-8')).hexdigest()
+        if obj['db']!=previous['db'] or obj['previous_sha']!=digest or obj['pairs']!=3 or obj['sum']!=15:
+            raise ValueError('RESUME_CHECKPOINT')
+    return obj
+
+
+def resume_next(parent):
+    prior=resume_read(parent/DUAL_JOURNAL)
+    if prior.get('phase')!='RELEASED' or prior.get('status')!='PASS':
+        raise ValueError('RESUME_PREREQUISITE')
+    for stage in (1,2):
+        journal=resume_file(parent,stage,'journal')
+        checkpoint=resume_file(parent,stage,'checkpoint')
+        if not journal.exists() and not checkpoint.exists():
+            if stage==1 and (resume_file(parent,2,'journal').exists() or resume_file(parent,2,'checkpoint').exists()):
+                raise ValueError('RESUME_ORDER')
+            return stage
+        if not journal.exists() or not checkpoint.exists():
+            raise ValueError('RESUME_RECONCILE_REQUIRED')
+        obj=resume_read(journal)
+        if obj.get('phase')!='RELEASED' or obj.get('status')!='PASS' or obj.get('stage')!=stage:
+            raise ValueError('RESUME_RECONCILE_REQUIRED')
+        resume_checkpoint_read(parent,stage)
+    return 0
+
+
+def resume_do_stage(parent,db_path,stage,live):
+    live()
+    identity=resume_db_identity(db_path)
+    result={'schema':1,'protocol':RESUME_PROTOCOL,'scope':'SYNTHETIC_ONLY','stage':stage,'db':identity}
+    if stage==1:
+        rows=[(i,100+i,102+i,99+i,101+i,3) for i in range(30) if i!=7]
+        aggregate=aggregate_session_rows(rows,30,5)
+        result['bars']=[list(x) for x in aggregate['bars']]
+        if result['bars']!=resume_expected_bars() or aggregate['missing_windows']!=1:
+            raise ValueError('RESUME_AGGREGATION')
+    elif stage==2:
+        previous=resume_checkpoint_read(parent,1)
+        if previous['db']!=identity:
+            raise ValueError('RESUME_DB_CHANGED')
+        bars=previous['bars']
+        differences=[b[4]-a[4] for a,b in zip(bars,bars[1:]) if b[0]-a[0]==5]
+        result.update(previous_sha=hashlib.sha256(json.dumps(previous,sort_keys=True).encode('utf-8')).hexdigest(),
+                      pairs=len(differences),sum=sum(differences))
+        if result['pairs']!=3 or result['sum']!=15:
+            raise ValueError('RESUME_STATISTICS')
+    else:
+        raise ValueError('RESUME_STAGE')
+    live()
+    with resume_file(parent,stage,'checkpoint').open('xb') as f:
+        f.write(json.dumps(result,sort_keys=True).encode('utf-8'))
+        f.flush()
+        os.fsync(f.fileno())
+    if resume_checkpoint_read(parent,stage)!=result:
+        raise ValueError('RESUME_SAVE')
+    live()
+
+
+def dual_run(parent,db_path,api,notify=lambda *_:None,*,resume_stage=None):
     parent=local_folder(str(parent))
-    dest=parent/DUAL_JOURNAL
+    if resume_stage is not None:
+        if resume_next(parent)!=resume_stage:
+            raise ValueError('RESUME_ORDER')
+        if resume_stage==2 and resume_checkpoint_read(parent,1)['db']!=resume_db_identity(db_path):
+            raise ValueError('RESUME_DB_CHANGED')
+        claim_pr,claim_head=RESUME_PR,RESUME_HEAD
+        dest=resume_file(parent,resume_stage,'journal')
+    else:
+        claim_pr,claim_head=DUAL_PR,DUAL_HEAD
+        dest=parent/DUAL_JOURNAL
     if dest.exists():
         with dest.open('rb') as f:
             raw=f.read(4097)
@@ -2901,12 +3015,12 @@ def dual_run(parent,db_path,api,notify=lambda *_:None):
     summary=control_queue_summary(q,lease)
     if summary['remote']!='OBSERVED_IDLE_NOT_ACQUIRED' or summary['task_status']!='blocked':
         raise ValueError('DUAL_QUEUE_OR_BUSY')
-    pr=api(DUAL_BASE+'/pulls/41')
-    if (pr.get('state')!='open' or pr.get('draft') is not True or pr.get('head',{}).get('sha')!=DUAL_HEAD or
+    pr=api(DUAL_BASE+'/pulls/'+str(claim_pr))
+    if (pr.get('state')!='open' or pr.get('draft') is not True or pr.get('head',{}).get('sha')!=claim_head or
             pr.get('base',{}).get('ref')!='main' or pr.get('head',{}).get('repo',{}).get('full_name')!='mibesamiti-png/Chappy-Trading-Lab'):
         raise ValueError('DUAL_PR')
     claims=api(DUAL_BASE+'/pulls?state=open&per_page=100')
-    if type(claims) is not list or len(claims)>=100 or any('CTL-001' in str(x.get('title','')).upper() and x.get('number') not in (4,5,6,7,41) for x in claims):
+    if type(claims) is not list or len(claims)>=100 or any('CTL-001' in str(x.get('title','')).upper() and x.get('number') not in (4,5,6,7,41,43) for x in claims):
         raise ValueError('DUAL_OTHER_CLAIM')
     if control_checkpoint(parent,CONTROL_LAUNCH,control_evidence(parent),summary)!='REOPENED':
         raise ValueError('DUAL_RESTART_REQUIRED')
@@ -2914,6 +3028,8 @@ def dual_run(parent,db_path,api,notify=lambda *_:None):
     deadline=(datetime.now(timezone.utc)+timedelta(minutes=10)).isoformat()
     dual_local_guard(db_path,owner,deadline,'idle')
     record={'schema':1,'owner':owner,'deadline':deadline,'phase':'PREPARED','status':'INCOMPLETE'}
+    if resume_stage is not None:
+        record['stage']=resume_stage
     with dest.open('xb') as f:
         f.write(json.dumps(record,sort_keys=True).encode('utf-8'))
         f.flush()
@@ -2930,24 +3046,30 @@ def dual_run(parent,db_path,api,notify=lambda *_:None):
         if control_queue_summary(q,lease)['remote']!='OBSERVED_IDLE_NOT_ACQUIRED':
             raise ValueError('DUAL_REMOTE_BUSY')
         claim=dict(lease)
-        claim.update(status='active',owner=owner,claim_pr=DUAL_PR,task_ids=['CTL-001'],expires_utc=deadline)
+        claim.update(status='active',owner=owner,claim_pr=claim_pr,task_ids=['CTL-001'],expires_utc=deadline)
         save('REMOTE_REQUEST')
         dual_remote_write(api,sha,claim)
         _,actual=dual_remote_lease(api)
-        if not dual_owned(actual,owner,deadline):
+        if not dual_owned(actual,owner,deadline,claim_pr):
             raise ValueError('DUAL_REMOTE_LOST')
         remote=True
         save('REMOTE_ACQUIRED')
         dual_local_guard(db_path,owner,deadline,'acquire')
         local=True
         save('LOCAL_ACQUIRED')
-        _,actual=dual_remote_lease(api)
-        _,current_q=dual_contents(api(DUAL_QUEUE))
-        if not dual_owned(actual,owner,deadline) or current_q!=q or datetime.fromisoformat(deadline)<=datetime.now(timezone.utc):
-            raise ValueError('DUAL_REMOTE_LOST')
-        dual_local_guard(db_path,owner,deadline,'live')
+        def live():
+            _,actual=dual_remote_lease(api)
+            _,current_q=dual_contents(api(DUAL_QUEUE))
+            if not dual_owned(actual,owner,deadline,claim_pr) or current_q!=q or datetime.fromisoformat(deadline)<=datetime.now(timezone.utc):
+                raise ValueError('DUAL_REMOTE_LOST')
+            dual_local_guard(db_path,owner,deadline,'live')
+        live()
+        if resume_stage is not None:
+            resume_do_stage(parent,db_path,resume_stage,live)
         save('CHECKPOINT_SAVED')
-        comment=api(DUAL_BASE+'/issues/41/comments','POST',{'body':DUAL_STATUS_TEXT})
+        live()
+        body=DUAL_STATUS_TEXT if resume_stage is None else ('CTL-001 synthetic guarded resume pilot: stage %d/2 checkpoint verified; release follows. No market research or holdout access.'%resume_stage)
+        comment=api(DUAL_BASE+'/issues/'+str(claim_pr)+'/comments','POST',{'body':body})
         if type(comment) is not dict or type(comment.get('id')) is not int:
             raise ValueError('DUAL_REPORT')
         reported=True
@@ -2959,11 +3081,11 @@ def dual_run(parent,db_path,api,notify=lambda *_:None):
         if remote:
             dual_local_guard(db_path,owner,deadline,'not_owned')
             sha,actual=dual_remote_lease(api)
-            if not dual_owned(actual,owner,deadline):
+            if not dual_owned(actual,owner,deadline,claim_pr):
                 raise ValueError('DUAL_REMOTE_LOST')
             idle=dict(actual)
             idle.update(status='idle',owner=None,task_ids=[],expires_utc=None,last_owner=owner,
-                        last_claim_pr=DUAL_PR,last_result_commit=DUAL_HEAD,released_utc=datetime.now(timezone.utc).isoformat(),
+                        last_claim_pr=claim_pr,last_result_commit=claim_head,released_utc=datetime.now(timezone.utc).isoformat(),
                         last_run_status='Operational dual-guard pilot; no research or holdout access')
             idle.pop('claim_pr',None)
             dual_remote_write(api,sha,idle)
@@ -3150,7 +3272,7 @@ def install_runner_controls(owner):
     owner.batch_adapter_btn.pack(side='left',padx=2)
     owner.control_plane_btn=ttk.Button(report_row,text='研究実行管理',command=owner.run_control_plane)
     owner.control_plane_btn.pack(side='left',padx=2)
-    owner.dual_guard_btn=ttk.Button(report_row,text='排他実行権テスト',command=owner.run_dual_guard)
+    owner.dual_guard_btn=ttk.Button(report_row,text='排他・再開テスト',command=owner.run_dual_guard)
     owner.dual_guard_btn.pack(side='left',padx=2)
     owner.diag_btn=ttk.Button(report_row,text='デバッグ報告',command=owner.open_diagnostics)
     owner.diag_btn.pack(side='right',padx=2)
@@ -3277,23 +3399,28 @@ class DataDesktop(UpdateDesktop):
         if self.closing or self.parquet_busy or self.catalog_busy or self.folder_dialog is not None:
             return
         parent=Path(self.path).parent
+        stage=None
+        selected=None
         if (parent/DUAL_JOURNAL).exists():
             try:
-                with (parent/DUAL_JOURNAL).open('rb') as f:
-                    raw=f.read(4097)
-                obj=json.loads(raw)
-                if len(raw)>4096 or obj.get('status')!='PASS' or obj.get('phase')!='RELEASED':
-                    raise ValueError('DUAL_RECONCILE_REQUIRED')
-                result='排他実行権テスト：保存済みPASS / ローカル・共有実行権解放確認済み / 研究実行ロック中'
+                stage=resume_next(parent)
+                if stage==0:
+                    result='排他・再開テスト：保存済みPASS / 人工2/2工程完了・再実行なし / 研究実行ロック中'
+                    self.log(result)
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(result)
+                    return
+                if stage==2:
+                    selected=resume_checkpoint_read(parent,1)['db']['path']
             except Exception:
-                result='排他実行権テスト：中断記録あり。自動再取得・解放しません。管理者による照合が必要。'
-            self.log(result)
-            self.root.clipboard_clear()
-            self.root.clipboard_append(result)
+                self.log('排他・再開テスト：中断または不整合。自動再取得・解放しません。')
+                return
+        detail=('人工ジョブ第%d工程だけを実行し保存・解放します。市場データ研究は行いません。'%stage if stage else
+                '既存の共通研究DB run_guard.sqlite とGitHub共有リースを使用し、取得・保存・解放の試験を1回行います。')
+        if not messagebox.askyesno('排他・再開テスト',detail,parent=self.root):
             return
-        if not messagebox.askyesno('排他実行権テスト','既存の共通研究DB run_guard.sqlite とGitHub共有リースを使用し、取得・保存・解放の試験を1回行います。研究・市場データ読み取りは行いません。',parent=self.root):
-            return
-        selected=filedialog.askopenfilename(parent=self.root,title='既存の共通研究DBを選択',filetypes=[('共通研究DB','run_guard.sqlite')])
+        if selected is None:
+            selected=filedialog.askopenfilename(parent=self.root,title='既存の共通研究DBを選択',filetypes=[('共通研究DB','run_guard.sqlite')])
         if not selected:
             return
         gh=shutil.which('gh')
@@ -3308,8 +3435,12 @@ class DataDesktop(UpdateDesktop):
         def run():
             try:
                 api=lambda endpoint,method='GET',body=None:dual_api(endpoint,method,body,token=token,gh=gh)
-                dual_run(parent,selected,api,lambda phase:results.put(('progress',phase)))
-                results.put(('done','排他実行権テスト：PASS / 共有CAS・ローカル取得・保存・解放確認 / 研究実行ロック中 / 2026年評価なし'))
+                dual_run(parent,selected,api,lambda phase:results.put(('progress',phase)),resume_stage=stage)
+                if stage is None:
+                    result='排他実行権テスト：PASS / 共有CAS・ローカル取得・保存・解放確認'
+                else:
+                    result='排他・再開テスト：PASS / 人工%d/2工程保存・実行権解放 / '%stage+('次回は第2工程のみ' if stage==1 else '第1工程再実行なし・完了')
+                results.put(('done',result+' / 研究実行ロック中 / 2026年評価なし'))
             except Exception:
                 results.put(('done','排他実行権テスト：停止（認証・DB・共有実行権・中断記録を確認）。研究実行ロック中。'))
         def poll():
