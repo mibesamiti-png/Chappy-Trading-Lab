@@ -23,10 +23,17 @@ Do not upload source datasets, split archives, private manifests, unapproved der
 
 No financial performance is claimed. No software license is selected yet.
 
-## Latest proposed operational handoff
+## Current operational handoff
 
-[Draft PR #1](https://github.com/mibesamiti-png/Chappy-Trading-Lab/pull/1) records the bounded local persistence/audit/robustness run. Until maintainer review, read its proposed STATE, TASK_QUEUE and HANDOFF alongside main. No schedule activation or independent Chat verification is claimed.
+PRs #3, #1 and #2 were merged with owner approval. Start from current main, not the closed drafts. Chat independently reproduced the ten operational unit tests at the PR #1 revision; this is not scientific replication or a Work-agent restart test. CTL-001 is the outstanding environment gate; see HANDOFF. No schedule is active.
+
+- [Development workflow](DEVELOPMENT_WORKFLOW.md) and [DIL guidance](DIL_RESEARCH_GUIDE.md)
+- [Historical research index](docs/HISTORICAL_RESEARCH_INDEX.md) and [isolated legacy handoff](docs/LEGACY_HANDOFF.md) — not approved input to HF research.
 
 - [Persistence evidence and unverified scheduler boundary](operations/PERSISTENCE.md)
 - [Shared lease and completed-task protocol](operations/LEASE_PROTOCOL.md)
 - [Public file/content review boundary](operations/PUBLICATION.md)
+
+## Runner-assisted fresh-agent acceptance
+
+The owner verified v0.8.24 read-only runner handoff on 2026-11-28. See the current fresh-agent acceptance section in [HANDOFF.md](HANDOFF.md). This is not completed CTL-001 or unattended readiness. The scientific queue revision and locked holdout are unchanged.
