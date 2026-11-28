@@ -18,12 +18,12 @@ SOURCE = Path(__file__).resolve().parents[1] / 'operations/runner_dist/START_GUI
 tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
 names = {'drive_allowed', 'local_folder', 'parquet_env', 'parquet_command', 'parquet_runtime', 'session_day_base', 'map_session_rows', 'aggregate_session_rows',
          'describe_session_horizon', 'integrated_pipeline_expected', 'integrated_pipeline_analyze',
-         'synthetic_integrated_checkpoint', 'synthetic_prefix_checkpoint', 'footer_result', 'footer_member_bytes'}
+         'synthetic_integrated_checkpoint', 'synthetic_prefix_checkpoint', 'footer_result', 'footer_member_bytes', 'synthetic_batch_adapter_checkpoint', 'batch_adapter_result'}
 nodes = [n for n in tree.body if
          isinstance(n, ast.FunctionDef) and n.name in names or
          isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in
                                          {'PARQUET_VERSION', 'PARQUET_WORKER', 'RESEARCH_HORIZONS', 'SESSION_EPOCH',
-                                          'SESSION_FIRST', 'SESSION_LIMIT', 'PIPELINE_RECEIPT', 'PIPELINE_WORKER', 'PREFIX_WORKER', 'FOOTER_WORKER', 'FOOTER_LIMIT'} for t in n.targets)]
+                                          'SESSION_FIRST', 'SESSION_LIMIT', 'PIPELINE_RECEIPT', 'PIPELINE_WORKER', 'PREFIX_WORKER', 'FOOTER_WORKER', 'FOOTER_LIMIT', 'BATCH_ADAPTER_WORKER'} for t in n.targets)]
 scope = dict(date=date, math=math, Path=Path, os=os, re=re, stat=stat, sys=sys, json=json,
              subprocess=subprocess, zipfile=zipfile, atomic=lambda p, b: p.write_bytes(b))
 exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), 'exec'), scope)
@@ -70,6 +70,8 @@ class ParquetTests(unittest.TestCase):
             self.assertEqual(footer['groups'],dict(before=1,crossing=1,reserved=1,unverified=0))
             self.assertEqual(footer['fields'][2]['name'],'OTHER')
             self.assertEqual(footer['row_decodes'],0)
+            self.assertEqual(scope['synthetic_batch_adapter_checkpoint'](p),dict(scope='SYNTHETIC_ONLY',status='PASS'))
+            self.assertEqual(scope['synthetic_batch_adapter_checkpoint'](p),dict(scope='SYNTHETIC_ONLY',status='PASS'))
 
     def test_single_member_bytes(self):
         with tempfile.TemporaryDirectory() as d:

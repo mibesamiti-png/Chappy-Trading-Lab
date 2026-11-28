@@ -1412,7 +1412,7 @@ RESEARCH_HORIZONS=(1,5,15,30)
 HORIZON_RECEIPT='synthetic_horizon_aggregation.local.json'
 
 
-def aggregate_session_rows(rows,session_minutes,horizon):
+def aggregate_session_rows(rows,session_minutes,horizon,*,float_prices=False):
     if type(session_minutes) is not int or not 1<=session_minutes<=1440 or type(horizon) is not int or horizon not in RESEARCH_HORIZONS:
         raise ValueError('SESSION_POLICY')
     if type(rows) not in (list,tuple) or len(rows)>session_minutes:
@@ -1420,7 +1420,8 @@ def aggregate_session_rows(rows,session_minutes,horizon):
     by_minute={}
     previous=-1
     for row in rows:
-        if type(row) not in (list,tuple) or len(row)!=6 or any(type(v) is not int for v in row):
+        if (type(row) not in (list,tuple) or len(row)!=6 or type(row[0]) is not int or type(row[5]) is not int or
+                (any(type(v) is not float or not math.isfinite(v) for v in row[1:5]) if float_prices else any(type(v) is not int for v in row[1:5]))):
             raise ValueError('SESSION_ROW_SCHEMA')
         minute,o,h,l,c,v=row
         if not previous<minute<session_minutes or min(o,h,l,c)<=0 or h<max(o,l,c) or l>min(o,h,c) or v<0:
@@ -1500,7 +1501,7 @@ def session_day_base(day):
     return (d-SESSION_EPOCH).days*1440
 
 
-def map_session_rows(schedule,rows):
+def map_session_rows(schedule,rows,*,float_prices=False):
     # schedule: (ISO session date, explicit UTC offset in minutes, duration).
     # rows: (UTC epoch minute, integer open, high, low, close, volume).
     if type(schedule) not in (list,tuple) or not 1<=len(schedule)<=366:
@@ -1522,7 +1523,8 @@ def map_session_rows(schedule,rows):
     previous=-1
     outside=0
     for row in rows:
-        if type(row) not in (tuple,list) or len(row)!=6 or any(type(v) is not int for v in row):
+        if (type(row) not in (tuple,list) or len(row)!=6 or type(row[0]) is not int or type(row[5]) is not int or
+                (any(type(v) is not float or not math.isfinite(v) for v in row[1:5]) if float_prices else any(type(v) is not int for v in row[1:5]))):
             raise ValueError('SESSION_INPUT_SCHEMA')
         minute,o,h,l,c,v=row
         if not SESSION_FIRST<=minute<SESSION_LIMIT:
@@ -1727,7 +1729,7 @@ def synthetic_calendar_probe():
 STATS_RECEIPT='synthetic_descriptive_statistics.local.json'
 
 
-def describe_session_horizon(sessions,horizon):
+def describe_session_horizon(sessions,horizon,*,float_prices=False):
     # Input sessions are independent (length, rows) pairs in normalized
     # integer price units. Weight complete bars/pairs equally, not dates.
     if type(sessions) not in (list,tuple) or not 1<=len(sessions)<=366:
@@ -1740,7 +1742,7 @@ def describe_session_horizon(sessions,horizon):
     possible_pairs=0
     positive=negative=zero=0
     for length,rows in sessions:
-        result=aggregate_session_rows(rows,length,horizon)
+        result=aggregate_session_rows(rows,length,horizon,float_prices=float_prices)
         bars=result['bars']
         bars_count+=len(bars)
         missing_windows+=result['missing_windows']
@@ -2302,6 +2304,224 @@ def footer_report_text(report):
     return '\n'.join(lines)
 
 
+# Logical prefix adapter. Real mode validates only, no scientific metrics.
+# Immutable memory buffer; full timestamp column is decoded for order checks.
+# Arrow may internally decode pages containing reserved price rows.
+BATCH_ADAPTER_REPORT='market_batch_adapter.local.json'
+BATCH_ADAPTER_ATTEMPT='market_batch_adapter_attempt.local.json'
+BATCH_ADAPTER_WORKER=r'''
+import io,sys,json,math,hashlib
+from datetime import datetime
+import pyarrow as pa
+import pyarrow.parquet as pq
+if pa.__version__!='26.0.1':
+    raise ValueError('BATCH_VERSION')
+LIMIT=32*1024*1024
+STEP=60000000000
+EPOCH=datetime(1970,1,1)
+FIRST=(datetime(2022,3,7)-EPOCH).days*86400*1000000000
+CUTOFF=(datetime(2026,1,1)-EPOCH).days*86400*1000000000
+NAMES=['datetime','Open','High','Low','Close','Volume']
+SCHEMA=pa.schema([('datetime',pa.timestamp('ns')),
+                  *[(k,pa.float64()) for k in NAMES[1:5]],
+                  ('Volume',pa.int64()),('source',pa.large_string())])
+def prefix_rows(raw,batch_size=8192):
+    if not 12<=len(raw)<=LIMIT or raw[:4]!=b'PAR1' or raw[-4:]!=b'PAR1':
+        raise ValueError('BATCH_FORMAT')
+    if not 0<int.from_bytes(raw[-8:-4],'little')<=min(len(raw)-12,4*1024*1024):
+        raise ValueError('BATCH_FOOTER')
+    with pq.ParquetFile(io.BytesIO(raw),pre_buffer=False,thrift_string_size_limit=1048576,
+                        thrift_container_size_limit=100000) as p:
+        if p.schema_arrow!=SCHEMA or not 1<=p.metadata.num_rows<=2000000 or not 1<=p.num_row_groups<=4096:
+            raise ValueError('BATCH_SCHEMA')
+        if type(batch_size) is not int or not 1<=batch_size<=8192:
+            raise ValueError('BATCH_SIZE')
+        # Do not assume chronology based on footer extrema. Inspect only
+        # timestamps in this pass, including reserved dates for ordering.
+        prior=-1
+        count=0
+        total=0
+        before_hash=hashlib.sha256()
+        for batch in p.iter_batches(batch_size=batch_size,columns=['datetime'],use_threads=False):
+            ticks=batch.column(0).cast(pa.int64()).to_pylist()
+            for t in ticks:
+                if type(t) is not int or t<=prior:
+                    raise ValueError('BATCH_ORDER')
+                prior=t
+                total+=1
+                if t<CUTOFF:
+                    if t<FIRST or t%STEP:
+                        raise ValueError('BATCH_TIME')
+                    count+=1
+                    before_hash.update(t.to_bytes(8,'little',signed=True))
+        if total!=p.metadata.num_rows or count==0:
+            raise ValueError('BATCH_EMPTY_OR_COUNT')
+        remaining=count
+        after_hash=hashlib.sha256()
+        for batch in p.iter_batches(batch_size=batch_size,columns=NAMES,use_threads=False):
+            # Slice before converting any price values to Python. Never
+            # inspect or emit reserved prices, even within a crossing batch.
+            take=min(remaining,batch.num_rows)
+            part=batch.slice(0,take)
+            columns=[part.column(0).cast(pa.int64()).to_pylist()]
+            columns.extend(part.column(i).to_pylist() for i in range(1,6))
+            for tick,o,h,l,c,v in zip(*columns):
+                if type(tick) is not int or not FIRST<=tick<CUTOFF or tick%STEP:
+                    raise ValueError('BATCH_PERIOD')
+                if (any(type(x) is not float or not math.isfinite(x) or not 0<x<=10**18 for x in (o,h,l,c)) or
+                        h<max(o,l,c) or l>min(o,h,c) or type(v) is not int or v<0):
+                    raise ValueError('BATCH_OHLCV')
+                after_hash.update(tick.to_bytes(8,'little',signed=True))
+                yield [tick//STEP,o,h,l,c,v]
+            remaining-=take
+            if remaining==0:
+                break
+        if remaining or before_hash.digest()!=after_hash.digest():
+            raise ValueError('BATCH_PREFIX_MISMATCH')
+def make(dates,values,volumes):
+    out=io.BytesIO()
+    data={'datetime':dates,**{k:values for k in NAMES[1:5]},'Volume':volumes,'source':['invented']*len(dates)}
+    pq.write_table(pa.Table.from_pydict(data,schema=SCHEMA),out,row_group_size=len(dates))
+    return out.getvalue()
+if sys.argv[1:]==['--fixture']:
+    dates=[datetime(2025,7,7,9,30+i) for i in range(3)]+[datetime(2026,1,1,9,30),datetime(2026,1,2,9,30)]
+    prices=[100.125,100.375,100.625,float('nan'),-1.0]
+    volumes=[1,2,3,-1,-1]
+    raw=make(dates,prices,volumes)
+    rows=list(prefix_rows(raw,2))
+    if rows!=list(prefix_rows(raw,3)) or [r[4] for r in rows]!=prices[:3] or len(rows)!=3:
+        raise ValueError('BATCH_FIXTURE')
+    bad=[(make([dates[0],dates[3],dates[1]],[1.0]*3,[1]*3),'BATCH_ORDER'),
+         (make([dates[0],dates[0]],[1.0]*2,[1]*2),'BATCH_ORDER'),
+         (make([dates[3]],[1.0],[1]),'BATCH_EMPTY_OR_COUNT'),
+         (make([dates[0]],[float('nan')],[1]),'BATCH_OHLCV'),
+         (make([datetime(2025,7,7,9,30,1)],[1.0],[1]),'BATCH_TIME')]
+    for data,expected in bad:
+        try:
+            list(prefix_rows(data,2))
+        except ValueError as exc:
+            if str(exc)!=expected:
+                raise
+        else:
+            raise ValueError('BATCH_REJECTION')
+    print(json.dumps({'scope':'SYNTHETIC_ONLY','rows':rows},allow_nan=False))
+elif not sys.argv[1:]:
+    raw=sys.stdin.buffer.read(LIMIT+1)
+    result='PASS'
+    try:
+        for _ in prefix_rows(raw):
+            pass
+    except ValueError as exc:
+        code=str(exc)
+        result=code if code in ('BATCH_FORMAT','BATCH_FOOTER','BATCH_SCHEMA','BATCH_ORDER','BATCH_TIME','BATCH_EMPTY_OR_COUNT','BATCH_PERIOD','BATCH_OHLCV','BATCH_PREFIX_MISMATCH') else 'BATCH_VALIDATION'
+    except Exception:
+        result='BATCH_READER'
+    print(json.dumps({'scope':'LOCAL_ADAPTER_VALIDATION_ONLY','status':result,
+                      'scientific_execution':'LOCKED','holdout_evaluation':'NOT_PERFORMED',
+                      'physical_isolation':'UNVERIFIED'}))
+else:
+    raise ValueError('BATCH_ARGS')
+'''
+
+
+def synthetic_batch_adapter_checkpoint(parent):
+    parent=local_folder(str(parent))
+    target=local_folder(str(parent/'ctl_pyarrow_26_0_1'))
+    marker=target/'ctl-owned.txt'
+    if marker.is_symlink() or not marker.is_file() or marker.stat().st_size!=len(b'CTL_PYARROW_26_0_1\n') or marker.read_bytes()!=b'CTL_PYARROW_26_0_1\n':
+        raise ValueError('PARQUET_UNOWNED_ENV')
+    python=target/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
+    raw=parquet_command(python,['-c',BATCH_ADAPTER_WORKER,'--fixture'],parent,120,capture=True)
+    if len(raw)>4096:
+        raise ValueError('BATCH_FIXTURE_LIMIT')
+    out=json.loads(raw)
+    start=session_day_base('2025-07-07')+570
+    rows=[[start+i,*([price]*4),i+1] for i,price in enumerate((100.125,100.375,100.625))]
+    if out!={'scope':'SYNTHETIC_ONLY','rows':rows}:
+        raise ValueError('BATCH_FIXTURE_RESULT')
+    # Naive Eastern wall clock mapped using explicit calendar offset.
+    mapped=map_session_rows([('2025-07-07',-240,3)],[[r[0]+240,*r[1:]] for r in rows],float_prices=True)
+    session=mapped['sessions'][0]
+    bars=aggregate_session_rows(session['rows'],3,1,float_prices=True)['bars']
+    stats=describe_session_horizon([(3,session['rows'])],1,float_prices=True)
+    expected=(0.25/100.125+0.25/100.375)/2
+    if mapped['outside']!=0 or [r[4] for r in bars]!=[100.125,100.375,100.625] or stats['observed_pairs']!=2 or not math.isclose(stats['mean_return'],expected,rel_tol=1e-12):
+        raise ValueError('BATCH_FIXTURE_INTEGRATION')
+    return {'scope':'SYNTHETIC_ONLY','status':'PASS'}
+
+
+def batch_adapter_result(raw):
+    if len(raw)>4096:
+        raise ValueError('BATCH_RESULT_LIMIT')
+    out=json.loads(raw)
+    if (type(out) is not dict or set(out)!={'scope','status','scientific_execution','holdout_evaluation','physical_isolation'} or
+            out['scope']!='LOCAL_ADAPTER_VALIDATION_ONLY' or out['scientific_execution']!='LOCKED' or
+            out['holdout_evaluation']!='NOT_PERFORMED' or out['physical_isolation']!='UNVERIFIED' or
+            out['status'] not in ('PASS','BATCH_FORMAT','BATCH_FOOTER','BATCH_SCHEMA','BATCH_ORDER','BATCH_TIME','BATCH_EMPTY_OR_COUNT','BATCH_PERIOD','BATCH_OHLCV','BATCH_PREFIX_MISMATCH','BATCH_VALIDATION','BATCH_READER')):
+        raise ValueError('BATCH_RESULT')
+    return out
+
+
+def market_batch_adapter_probe(parent):
+    parent=local_folder(str(parent))
+    receipt=parent/BATCH_ADAPTER_REPORT
+    if receipt.is_file():
+        with receipt.open('rb') as f:
+            return batch_adapter_result(f.read(4097))
+    if (parent/BATCH_ADAPTER_ATTEMPT).exists():
+        raise ValueError('BATCH_ATTEMPT_EXISTS')
+    # Require completed structural probe; its legacy receipt does not bind
+    # identity. Recheck current selection, do not assert it is the same member.
+    with (parent/FOOTER_REPORT).open('rb') as f:
+        footer_result(f.read(8193))
+    gate=source_gate_receipt(parent)
+    with (parent/'market_monthly_quality_selection.local.json').open('rb') as f:
+        selected_raw=f.read(QUALITY_RECEIPT_LIMIT+1)
+    if hashlib.sha256(selected_raw).hexdigest()!=gate['selection_sha256']:
+        raise ValueError('BATCH_SELECTION_CHANGED')
+    selected=json.loads(selected_raw)['selected']
+    row=next((r for r in selected if 12<=r['size']<=FOOTER_LIMIT),None)
+    if row is None:
+        raise ValueError('BATCH_NO_CANDIDATE')
+    paths=zip_paths(read_folders(parent/'research_folders.local.json').get('market_zips',[]))
+    archive=local_zip(paths[row['archive_index']])
+    target=local_folder(str(parent/'ctl_pyarrow_26_0_1'))
+    marker=target/'ctl-owned.txt'
+    if marker.is_symlink() or not marker.is_file() or marker.stat().st_size!=len(b'CTL_PYARROW_26_0_1\n') or marker.read_bytes()!=b'CTL_PYARROW_26_0_1\n':
+        raise ValueError('PARQUET_UNOWNED_ENV')
+    python=target/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
+    if not python.is_file():
+        raise ValueError('PARQUET_NOT_INSTALLED')
+    with (parent/BATCH_ADAPTER_ATTEMPT).open('xb') as f:
+        f.write(b'ONE_MEMBER_LOGICAL_PREFIX_VALIDATION\n')
+        f.flush()
+        os.fsync(f.fileno())
+    if load_market_candidates(parent)[0]!=gate['catalog_sha256']:
+        raise ValueError('BATCH_SOURCE_CHANGED')
+    raw=footer_member_bytes(archive,row['member'],row['size'],row['crc32'])
+    if load_market_candidates(parent)[0]!=gate['catalog_sha256']:
+        raise ValueError('BATCH_SOURCE_CHANGED')
+    done=subprocess.run([str(python),'-I','-c',BATCH_ADAPTER_WORKER],input=raw,cwd=str(parent),
+                        env=parquet_env(),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+                        timeout=120,check=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    report=batch_adapter_result(done.stdout)
+    payload=json.dumps(report,sort_keys=True).encode('utf-8')
+    atomic(receipt,payload)
+    with receipt.open('rb') as f:
+        if f.read(4097)!=payload:
+            raise ValueError('BATCH_SAVE')
+    return report
+
+
+def batch_adapter_text(report):
+    status=report['status']
+    return ('実Parquet接続検査（1候補・論理期間制限）\n'
+            '結果：'+status+'\n'
+            '日時順序・2025年以前OHLCV形式の検査のみ / 研究実行ロック中\n'
+            '2026年価格の研究・評価なし / 内部復号・物理隔離は未保証\n'
+            '実データ値・銘柄・行数の出力なし')
+
+
 # A fixed, local acceptance suite once per installed release.
 DIAG_FILE='runner_diagnostics.local.json'
 DIAG_LIMIT=16384
@@ -2317,6 +2537,7 @@ DIAG_STEPS=(('zip','人工ZIP・期間制限'),('parquet','既存Parquet環境')
             ('pipeline','人工ZIP・Parquet・統計の統合検査'),
             ('source_gate','市場接続ロック・候補整合性検査'),
             ('prefix','人工Parquet行グループ・期間境界検査'),
+            ('batch_adapter','人工Parquetバッチ・小数価格接続検査'),
             ('quality','保存済み月別選択の再現確認'))
 DIAG_CODES=('PASS','SKIP_NOT_CONFIGURED','FAIL_TIMEOUT','FAIL_IO','FAIL_VALIDATION','FAIL_REPRODUCIBILITY','FAIL_INTERNAL')
 
@@ -2393,6 +2614,7 @@ def diagnostic_run(parent,version,notify=lambda *_:None):
         'pipeline':lambda:synthetic_integrated_checkpoint(parent),
         'source_gate':lambda:source_gate_receipt(parent),
         'prefix':lambda:synthetic_prefix_checkpoint(parent),
+        'batch_adapter':lambda:synthetic_batch_adapter_checkpoint(parent),
         'quality':lambda:diagnostic_quality(parent),
     }
     rows=[]
@@ -2402,7 +2624,7 @@ def diagnostic_run(parent,version,notify=lambda *_:None):
         status='PASS'
         try:
             # Missing optional artifacts are not counted as success.
-            if key in ('parquet','ohlcv','pipeline','prefix') and not (parent/'ctl_pyarrow_26_0_1').is_dir():
+            if key in ('parquet','ohlcv','pipeline','prefix','batch_adapter') and not (parent/'ctl_pyarrow_26_0_1').is_dir():
                 raise FileNotFoundError()
             if key=='catalog' and not (parent/'market_zip_catalog.local.json').is_file():
                 raise FileNotFoundError()
@@ -2414,7 +2636,7 @@ def diagnostic_run(parent,version,notify=lambda *_:None):
                 raise FileNotFoundError()
             actions[key]()
         except FileNotFoundError:
-            status='SKIP_NOT_CONFIGURED' if key in ('parquet','ohlcv','checkpoint','catalog','quality','calendar_index','pipeline','source_gate','prefix') else 'FAIL_IO'
+            status='SKIP_NOT_CONFIGURED' if key in ('parquet','ohlcv','checkpoint','catalog','quality','calendar_index','pipeline','source_gate','prefix','batch_adapter') else 'FAIL_IO'
         except subprocess.TimeoutExpired:
             status='FAIL_TIMEOUT'
         except (OSError,subprocess.CalledProcessError):
@@ -2470,6 +2692,8 @@ def install_runner_controls(owner):
     # does not compete with any of the research or update controls.
     report_row=ttk.Frame(footer)
     report_row.pack(fill='x',pady=(4,0))
+    owner.batch_adapter_btn=ttk.Button(report_row,text='実データ接続検査',command=owner.run_batch_adapter_probe)
+    owner.batch_adapter_btn.pack(side='left',padx=2)
     owner.diag_btn=ttk.Button(report_row,text='デバッグ報告',command=owner.open_diagnostics)
     owner.diag_btn.pack(side='right',padx=2)
     owner.runner_footer=footer
@@ -2519,6 +2743,38 @@ class DataDesktop(UpdateDesktop):
                 except tk.TclError:
                     self.log('構造確認報告のコピーに失敗しました。')
         self.log('実Parquet構造確認：1候補・行復号なし。')
+        threading.Thread(target=run,daemon=False).start()
+        self.root.after(150,poll)
+
+    def run_batch_adapter_probe(self):
+        if self.closing or self.parquet_busy or self.catalog_busy or self.folder_dialog is not None:
+            return
+        parent=Path(self.path).parent
+        if not (parent/BATCH_ADAPTER_REPORT).is_file() and not messagebox.askyesno('実データ接続検査','既存候補1銘柄だけをメモリ展開し、日時順序と2025年以前のOHLCV形式を確認します。2026年日時列や境界の圧縮ページは内部復号される場合があります。2026年価格の分析・評価や科学研究は実行しません。',parent=self.root):
+            return
+        self.parquet_busy=True
+        self.batch_adapter_btn.configure(state='disabled')
+        results=queue.Queue()
+        def run():
+            try:
+                results.put(batch_adapter_text(market_batch_adapter_probe(parent)))
+            except Exception:
+                results.put('実データ接続検査：停止（設定・既試行・整合性・読み取りを確認）。研究実行ロック中。')
+        def poll():
+            try:
+                result=results.get_nowait()
+            except queue.Empty:
+                self.root.after(150,poll)
+                return
+            self.parquet_busy=False
+            self.batch_adapter_btn.configure(state='normal')
+            self.log(result)
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(result)
+                self.log('接続検査報告をクリップボードにコピーしました。')
+            except tk.TclError:
+                self.log('接続検査報告のコピーに失敗しました。')
         threading.Thread(target=run,daemon=False).start()
         self.root.after(150,poll)
 
