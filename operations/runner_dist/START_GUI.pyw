@@ -4,6 +4,12 @@ import os
 import json
 import stat
 import re
+import io
+import zipfile
+import csv
+from datetime import date
+import hashlib
+import importlib.util
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog
@@ -161,12 +167,142 @@ def read_folders(path):
         return {}
 
 
+# Synthetic research pipeline only. No caller-supplied path or real archive is opened.
+PROBE_MAX_ARCHIVE = 2 * 1024 * 1024
+PROBE_MAX_MEMBER = 512 * 1024
+PROBE_MAX_ENTRIES = 128
+PROBE_MAX_RATIO = 200
+PROBE_PROTOCOL = 'synthetic-zip-period-v1'
+
+
+def probe_zip_catalog(archive):
+    if type(archive) is not bytes or len(archive) > PROBE_MAX_ARCHIVE:
+        raise ValueError('PROBE_ARCHIVE_LIMIT')
+    with zipfile.ZipFile(io.BytesIO(archive), 'r') as z:
+        infos = z.infolist()
+        if len(infos) > PROBE_MAX_ENTRIES:
+            raise ValueError('PROBE_ENTRY_LIMIT')
+        catalog = {}
+        total = 0
+        for item in infos:
+            name = item.filename
+            parts = name.rstrip('/').split('/')
+            if (not name or '\\' in name or any(not p or p in ('.', '..') or ':' in p for p in parts)
+                    or any(ord(c) < 32 for c in name) or item.orig_filename != name):
+                raise ValueError('PROBE_UNSAFE_NAME')
+            key = name.rstrip('/').casefold()
+            if key in catalog:
+                raise ValueError('PROBE_DUPLICATE')
+            mode = (item.external_attr >> 16) & 0xFFFF
+            if (stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)
+                    or item.flag_bits & 1
+                    or item.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)):
+                raise ValueError('PROBE_UNSUPPORTED_ENTRY')
+            if (item.file_size > PROBE_MAX_MEMBER
+                    or item.file_size > PROBE_MAX_RATIO * max(item.compress_size, 1)):
+                raise ValueError('PROBE_MEMBER_LIMIT')
+            total += item.file_size
+            if total > PROBE_MAX_ARCHIVE:
+                raise ValueError('PROBE_TOTAL_LIMIT')
+            catalog[key] = item
+        return catalog
+
+
+def probe_read_member(archive, name):
+    catalog = probe_zip_catalog(archive)
+    item = catalog.get(name.casefold())
+    if item is None or item.is_dir() or item.filename != name:
+        raise ValueError('PROBE_MEMBER_MISSING')
+    with zipfile.ZipFile(io.BytesIO(archive), 'r') as z:
+        with z.open(item.filename, 'r') as stream:
+            result = stream.read(PROBE_MAX_MEMBER + 1)
+        if len(result) != item.file_size or len(result) > PROBE_MAX_MEMBER:
+            raise ValueError('PROBE_MEMBER_SIZE')
+        return result
+
+
+def probe_period_rows(raw):
+    reader = csv.DictReader(io.StringIO(raw.decode('utf-8')))
+    if reader.fieldnames != ['date', 'value']:
+        raise ValueError('PROBE_SCHEMA')
+    values = []
+    for row in reader:
+        if len(values) >= 4096 or None in row:
+            raise ValueError('PROBE_ROW_LIMIT')
+        day = date.fromisoformat(row['date'])
+        if row['date'] != day.isoformat() or not (date(2000, 1, 1) <= day < date(2026, 1, 1)):
+            raise ValueError('PROBE_PERIOD_LOCKED')
+        if not re.fullmatch(r'-?[0-9]{1,6}', row['value'] or ''):
+            raise ValueError('PROBE_VALUE')
+        values.append(int(row['value']))
+    if not values:
+        raise ValueError('PROBE_EMPTY')
+    return {'rows': len(values), 'sum': sum(values)}
+
+
+def probe_fixture():
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr('synthetic/selected.csv', b'date,value\n2025-01-02,3\n2025-01-03,-1\n2025-01-06,8\n')
+        z.writestr('synthetic/other.csv', b'date,value\n2025-01-02,999\n')
+    return buffer.getvalue()
+
+
+def synthetic_zip_probe():
+    archive = probe_fixture()
+    catalog = probe_zip_catalog(archive)
+    selected = probe_read_member(archive, 'synthetic/selected.csv')
+    result = probe_period_rows(selected)
+    if len(catalog) != 2 or result != {'rows': 3, 'sum': 10}:
+        raise ValueError('PROBE_WRONG_RESULT')
+    try:
+        probe_period_rows(b'date,value\n2026-01-02,1\n')
+    except ValueError as exc:
+        if str(exc) != 'PROBE_PERIOD_LOCKED':
+            raise
+    else:
+        raise ValueError('PROBE_PERIOD_GATE_FAILED')
+    return {'protocol': PROBE_PROTOCOL, 'scope': 'SYNTHETIC_ONLY',
+            'entries': len(catalog), 'rows': result['rows'], 'sum': result['sum'],
+            'selected_sha256': hashlib.sha256(selected).hexdigest(),
+            'period_gate': 'PASS'}
+
+
+def synthetic_probe_checkpoint(path):
+    # Local synthetic receipt only; never use a registered market archive.
+    expected = synthetic_zip_probe()
+    payload = json.dumps(expected, sort_keys=True).encode('utf-8')
+    atomic(path, payload)
+    with path.open('rb') as f:
+        actual = f.read(4097)
+    if actual != payload:
+        raise ValueError('PROBE_CHECKPOINT_MISMATCH')
+    return expected
+
+
 class DataDesktop(UpdateDesktop):
     def __init__(self, *args, **kwargs):
         self.folder_dialog = None
         super().__init__(*args, **kwargs)
         self.folder_btn = ttk.Button(self.link_btn.master, text='研究データ設定', command=self.configure_folders)
         self.folder_btn.pack(side='left', padx=3)
+        self.probe_btn = ttk.Button(self.link_btn.master, text='研究基盤テスト', command=self.run_research_probe)
+        self.probe_btn.pack(side='left', padx=3)
+
+    def run_research_probe(self):
+        if self.closing or self.folder_dialog is not None:
+            return
+        try:
+            result = synthetic_probe_checkpoint(Path(self.path).parent / 'synthetic_zip_probe.local.json')
+            self.log('人工ZIPテスト成功：選択読取・期間制限・集計・保存再読込。')
+        except (OSError, ValueError, RuntimeError, zipfile.BadZipFile, UnicodeError, TypeError):
+            self.log('人工ZIPテスト失敗。実データは開いていません。')
+            return
+        try:
+            found = importlib.util.find_spec('pyarrow') is not None
+        except (ImportError, ValueError):
+            found = False
+        self.log('PyArrow：' + ('候補あり（動作未検証）' if found else '未検出') + '。登録市場ZIPは未読。')
 
     def update_tick(self):
         if self.folder_dialog is not None:
