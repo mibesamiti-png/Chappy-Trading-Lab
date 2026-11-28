@@ -14,7 +14,7 @@ from pathlib import Path
 import unittest
 SOURCE=Path(__file__).resolve().parents[1]/'operations/runner_dist/START_GUI.pyw'
 tree=ast.parse(SOURCE.read_text(encoding='utf-8'))
-names={'control_queue_summary','dual_contents','dual_local_guard','dual_remote_lease','dual_auth_check','dual_remote_write','dual_owned','dual_run','resume_file','resume_read','resume_db_identity','resume_expected_bars','resume_checkpoint_read','resume_next','resume_do_stage','aggregate_session_rows'}
+names={'control_queue_summary','dual_contents','dual_local_guard','dual_remote_lease','dual_auth_check','dual_remote_write','dual_owned','dual_run','resume_file','resume_read','resume_db_identity','resume_expected_bars','resume_checkpoint_read','resume_next','resume_do_stage','aggregate_session_rows','handoff_guard_read','handoff_summary','handoff_text'}
 constants={'CONTROL_IDS','DUAL_PR','DUAL_HEAD','DUAL_BASE','DUAL_LEASE','DUAL_LEASE_GET','DUAL_QUEUE','DUAL_JOURNAL','DUAL_STATUS_TEXT','RESUME_PR','RESUME_HEAD','RESUME_PROTOCOL','RESEARCH_HORIZONS'}
 nodes=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in names or isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id in constants for t in n.targets)]
 scope=dict(base64=base64,hashlib=hashlib,json=json,os=os,re=re,sqlite3=sqlite3,stat=stat,Path=Path,
@@ -113,6 +113,35 @@ class DualGuardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             scope['resume_next'](self.p)
         self.assertEqual(self.api.writes,4)
+    def test_handoff_reopens_completed_without_writes(self):
+        self.run_pilot()
+        scope['dual_run'](self.p,self.db,self.api,resume_stage=1)
+        scope['dual_run'](self.p,self.db,self.api,resume_stage=2)
+        before={p.name:p.read_bytes() for p in self.p.glob('*.local.json')}
+        report=scope['handoff_summary'](self.p,self.api)
+        self.assertEqual(report,{'status':'READY_FOR_FRESH_AGENT_PROBE','revision':2,'finished_stages':2})
+        text=scope['handoff_text'](report)
+        self.assertNotIn(str(self.p),text)
+        self.assertNotIn(self.api.lease['last_owner'],text)
+        self.assertEqual((self.api.writes,self.api.comments),(6,3))
+        self.assertEqual(before,{p.name:p.read_bytes() for p in self.p.glob('*.local.json')})
+    def test_handoff_rejects_changed_local_owner(self):
+        self.run_pilot()
+        scope['dual_run'](self.p,self.db,self.api,resume_stage=1)
+        scope['dual_run'](self.p,self.db,self.api,resume_stage=2)
+        with closing(sqlite3.connect(self.db)) as c, c:
+            c.execute("UPDATE guard SET owner='another',status='active'")
+        with self.assertRaisesRegex(ValueError,'HANDOFF_LOCAL_STATE'):
+            scope['handoff_summary'](self.p,self.api)
+        self.assertEqual((self.api.writes,self.api.comments),(6,3))
+    def test_handoff_rejects_changed_remote_release(self):
+        self.run_pilot()
+        scope['dual_run'](self.p,self.db,self.api,resume_stage=1)
+        scope['dual_run'](self.p,self.db,self.api,resume_stage=2)
+        self.api.lease['last_owner']='different'
+        with self.assertRaisesRegex(ValueError,'HANDOFF_REMOTE_RELEASE'):
+            scope['handoff_summary'](self.p,self.api)
+        self.assertEqual((self.api.writes,self.api.comments),(6,3))
     def test_auth_check_is_read_only(self):
         self.assertEqual(scope['dual_auth_check'](self.api),'PASS')
         self.assertEqual((self.api.writes,self.api.comments),(0,0))

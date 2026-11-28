@@ -2957,6 +2957,72 @@ def resume_next(parent):
     return 0
 
 
+def handoff_guard_read(identity,journal):
+    # Read only the ownership metadata, not the private checkpoint or
+    # completed research payloads. Never create a DB or acquire a lock.
+    path=Path(identity['path'])
+    if resume_db_identity(path)!=identity:
+        raise ValueError('HANDOFF_DB_CHANGED')
+    db=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=2,isolation_level=None)
+    try:
+        db.execute('PRAGMA trusted_schema=OFF')
+        db.execute('PRAGMA query_only=ON')
+        if db.execute("SELECT type FROM sqlite_master WHERE name='guard'").fetchone()!=('table',):
+            raise ValueError('HANDOFF_DB_SCHEMA')
+        if [row[1] for row in db.execute('PRAGMA table_info(guard)')]!=['id','owner','status','deadline','checkpoint']:
+            raise ValueError('HANDOFF_DB_SCHEMA')
+        row=db.execute('SELECT owner,status,deadline FROM guard WHERE id=1').fetchone()
+        if row!=(journal['owner'],'released',journal['deadline']):
+            raise ValueError('HANDOFF_LOCAL_STATE')
+    finally:
+        db.close()
+
+
+def handoff_summary(parent,api):
+    parent=local_folder(str(parent))
+    _,q=dual_contents(api(DUAL_QUEUE))
+    sha,lease=dual_remote_lease(api)
+    summary=control_queue_summary(q,lease)
+    if summary['remote']!='OBSERVED_IDLE_NOT_ACQUIRED' or summary['task_status']!='blocked':
+        raise ValueError('HANDOFF_REMOTE_OR_QUEUE')
+    stage=resume_next(parent)
+    if stage!=0:
+        return {'status':'PENDING_SYNTHETIC','revision':summary['revision'],'finished_stages':stage-1}
+    last=resume_read(resume_file(parent,2,'journal'))
+    checkpoint=resume_checkpoint_read(parent,2)
+    if (type(last.get('owner')) is not str or not re.fullmatch(r'ctl-runner-pilot-[0-9a-f]{32}',last['owner'])
+            or type(last.get('deadline')) is not str):
+        raise ValueError('HANDOFF_JOURNAL')
+    # A newer release by another writer is not the same evidence.
+    if (lease.get('last_owner')!=last['owner'] or lease.get('last_claim_pr')!=RESUME_PR or
+            lease.get('last_result_commit')!=RESUME_HEAD):
+        raise ValueError('HANDOFF_REMOTE_RELEASE')
+    handoff_guard_read(checkpoint['db'],last)
+    # Second observation bounds this report; not an atomic cross-store lock.
+    _,now=dual_contents(api(DUAL_QUEUE))
+    now_sha,now_lease=dual_remote_lease(api)
+    if now!=q or now_sha!=sha or now_lease!=lease:
+        raise ValueError('HANDOFF_STATE_CHANGED')
+    handoff_guard_read(checkpoint['db'],last)
+    return {'status':'READY_FOR_FRESH_AGENT_PROBE','revision':summary['revision'],'finished_stages':2}
+
+
+def handoff_text(summary):
+    if summary['status']=='PENDING_SYNTHETIC':
+        return '引き継ぎ準備：人工工程 %d/2 / 未完了 / 研究実行ロック中'%summary['finished_stages']
+    if summary['status']!='READY_FOR_FRESH_AGENT_PROBE':
+        raise ValueError('HANDOFF_STATUS')
+    return ('CTL-001 引き継ぎ報告（読取専用）\n'
+            'リポジトリ：mibesamiti-png/Chappy-Trading-Lab / キュー revision '+str(summary['revision'])+'\n'
+            '人工2/2工程：保存済み・再実行なし / PR #43\n'
+            'メイン画面認証：読取成功 / 同一の選択済みDB・解放記録照合成功\n'
+            '共有リース：空き応答・最終解放記録一致（未取得）\n'
+            'CTL-002〜005：GitHub上で完了 / CTL-006：承認待ち / CTL-001：blocked\n'
+            '次：別AIセッションから既存の状態・環境を確認する。完了済み工程を再実行しない。\n'
+            '元Workの私有成果・共通DB同一性・別AI実行環境は未検証。\n'
+            '研究実行ロック中 / 市場本体未読 / 2026年評価なし / スケジュールなし')
+
+
 def resume_do_stage(parent,db_path,stage,live):
     live()
     identity=resume_db_identity(db_path)
@@ -3367,13 +3433,25 @@ class DataDesktop(UpdateDesktop):
     def run_control_plane(self):
         if self.closing or self.parquet_busy or self.catalog_busy or self.folder_dialog is not None:
             return
+        if self.busy or self.resident:
+            self.log('常駐または既存ジョブを停止してから研究実行管理を確認してください。')
+            return
+        parent=Path(self.path).parent
+        handoff=(parent/DUAL_JOURNAL).exists()
+        token=self.get_token() if handoff else None
+        if handoff and not token:
+            return
         self.parquet_busy=True
+        self.busy=True
+        self.buttons()
         self.control_plane_btn.configure(state='disabled')
         results=queue.Queue()
-        parent=Path(self.path).parent
         def run():
             try:
-                results.put(control_plane_text(control_plane_run(parent)))
+                if handoff:
+                    results.put(handoff_text(handoff_summary(parent,lambda endpoint:dual_api(endpoint,token=token))))
+                else:
+                    results.put(control_plane_text(control_plane_run(parent)))
             except Exception:
                 results.put('研究実行管理：停止（GitHub応答・保存済み証拠・ローカル状態の確認が必要）。研究実行ロック中。')
         def poll():
@@ -3383,6 +3461,8 @@ class DataDesktop(UpdateDesktop):
                 self.root.after(150,poll)
                 return
             self.parquet_busy=False
+            self.busy=False
+            self.buttons()
             self.control_plane_btn.configure(state='normal')
             self.log(result)
             try:
