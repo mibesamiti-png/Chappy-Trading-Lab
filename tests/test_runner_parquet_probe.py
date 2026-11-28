@@ -18,7 +18,7 @@ SOURCE = Path(__file__).resolve().parents[1] / 'operations/runner_dist/START_GUI
 tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
 names = {'drive_allowed', 'local_folder', 'parquet_env', 'parquet_command', 'parquet_runtime', 'session_day_base', 'map_session_rows', 'aggregate_session_rows',
          'describe_session_horizon', 'integrated_pipeline_expected', 'integrated_pipeline_analyze',
-         'synthetic_integrated_checkpoint', 'synthetic_prefix_checkpoint', 'footer_result', 'footer_member_bytes', 'synthetic_batch_adapter_checkpoint', 'batch_adapter_result'}
+         'synthetic_integrated_checkpoint', 'synthetic_prefix_checkpoint', 'footer_result', 'footer_member_bytes', 'synthetic_batch_adapter_checkpoint', 'batch_adapter_result', 'session_connection_result', 'session_connection_check'}
 nodes = [n for n in tree.body if
          isinstance(n, ast.FunctionDef) and n.name in names or
          isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in
@@ -72,6 +72,23 @@ class ParquetTests(unittest.TestCase):
             self.assertEqual(footer['row_decodes'],0)
             self.assertEqual(scope['synthetic_batch_adapter_checkpoint'](p),dict(scope='SYNTHETIC_ONLY',status='PASS'))
             self.assertEqual(scope['synthetic_batch_adapter_checkpoint'](p),dict(scope='SYNTHETIC_ONLY',status='PASS'))
+
+    def test_session_connection(self):
+        start=scope['session_day_base']('2025-07-07')+570
+        schedule=[['2025-07-07',-240,65]]
+        rows=[[start+i,100.125+i,100.375+i,99.875+i,100.25+i,i+1] for i in range(65) if i!=32]
+        sample=dict(status='PASS',session=schedule[0],rows=rows)
+        check=scope['session_connection_check']
+        result=check(sample,schedule)
+        self.assertEqual(result['status'],'PASS')
+        self.assertEqual(result['horizons'],[1,5,15,30])
+        self.assertEqual(scope['session_connection_result'](json.dumps(result).encode()),result)
+        self.assertEqual(check(dict(status='NO_REGULAR_SAMPLE'),schedule)['status'],'NO_REGULAR_SAMPLE')
+        self.assertEqual(check(dict(status='PASS',session=schedule[0],rows=rows[:2]),schedule)['status'],'INCOMPLETE_WINDOWS')
+        with self.assertRaises(ValueError):
+            check(dict(status='PASS',session=schedule[0],rows=[[start+65,*rows[0][1:]]]),schedule)
+        with self.assertRaises(ValueError):
+            check(sample,[['2025-07-08',-240,65]])
 
     def test_single_member_bytes(self):
         with tempfile.TemporaryDirectory() as d:

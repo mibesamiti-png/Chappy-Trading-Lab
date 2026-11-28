@@ -2309,6 +2309,8 @@ def footer_report_text(report):
 # Arrow may internally decode pages containing reserved price rows.
 BATCH_ADAPTER_REPORT='market_batch_adapter.local.json'
 BATCH_ADAPTER_ATTEMPT='market_batch_adapter_attempt.local.json'
+SESSION_CONNECTION_REPORT='market_session_connection.local.json'
+SESSION_CONNECTION_ATTEMPT='market_session_connection_attempt.local.json'
 BATCH_ADAPTER_WORKER=r'''
 import io,sys,json,math,hashlib
 from datetime import datetime
@@ -2378,6 +2380,36 @@ def prefix_rows(raw,batch_size=8192):
                 break
         if remaining or before_hash.digest()!=after_hash.digest():
             raise ValueError('BATCH_PREFIX_MISMATCH')
+def session_sample(raw,schedule):
+    # Fixed engineering selection: first observed scheduled regular session.
+    # No selection based on price, return, volume or aggregation outcome.
+    if type(schedule) is not list or not 1<=len(schedule)<=1500:
+        raise ValueError('SAMPLE_CALENDAR')
+    days={}
+    previous=''
+    for day,offset,length in schedule:
+        parsed=datetime.strptime(day,'%Y-%m-%d')
+        base=(parsed-EPOCH).days*1440
+        if parsed.strftime('%Y-%m-%d')!=day or day<=previous or not FIRST//STEP<=base<CUTOFF//STEP or type(offset) is not int or offset not in (-300,-240) or type(length) is not int or not 1<=length<=390:
+            raise ValueError('SAMPLE_CALENDAR')
+        previous=day
+        days[base//1440]=(day,offset,length)
+    chosen=None
+    rows=[]
+    for row in prefix_rows(raw):
+        minute=row[0]
+        item=days.get(minute//1440)
+        if item is None or not 570<=minute%1440<570+item[2]:
+            continue
+        if chosen is None:
+            chosen=item
+        if item==chosen:
+            rows.append(row)
+    if chosen is None:
+        return {'status':'NO_REGULAR_SAMPLE'}
+    if not 1<=len(rows)<=390:
+        raise ValueError('SAMPLE_LIMIT')
+    return {'status':'PASS','session':chosen,'rows':rows}
 def make(dates,values,volumes):
     out=io.BytesIO()
     data={'datetime':dates,**{k:values for k in NAMES[1:5]},'Volume':volumes,'source':['invented']*len(dates)}
@@ -2404,7 +2436,20 @@ if sys.argv[1:]==['--fixture']:
                 raise
         else:
             raise ValueError('BATCH_REJECTION')
+    sample=session_sample(raw,[['2025-07-07',-240,3]])
+    if sample!={'status':'PASS','session':('2025-07-07',-240,3),'rows':rows} or session_sample(raw,[['2025-07-08',-240,390]])!={'status':'NO_REGULAR_SAMPLE'}:
+        raise ValueError('SAMPLE_FIXTURE')
     print(json.dumps({'scope':'SYNTHETIC_ONLY','rows':rows},allow_nan=False))
+elif sys.argv[1:]==['--session-sample']:
+    header=sys.stdin.buffer.read(4)
+    size=int.from_bytes(header,'little')
+    if len(header)!=4 or not 1<=size<=65536:
+        raise ValueError('SAMPLE_HEADER')
+    calendar=sys.stdin.buffer.read(size)
+    if len(calendar)!=size:
+        raise ValueError('SAMPLE_HEADER')
+    raw=sys.stdin.buffer.read(LIMIT+1)
+    print(json.dumps(session_sample(raw,json.loads(calendar)),allow_nan=False))
 elif not sys.argv[1:]:
     raw=sys.stdin.buffer.read(LIMIT+1)
     result='PASS'
@@ -2462,19 +2507,78 @@ def batch_adapter_result(raw):
     return out
 
 
-def market_batch_adapter_probe(parent):
+def session_connection_result(raw):
+    if len(raw)>4096:
+        raise ValueError('SESSION_CONNECTION_RESULT')
+    obj=json.loads(raw)
+    if (type(obj) is not dict or set(obj)!={'scope','status','horizons','research_access','physical_isolation'} or
+            obj['scope']!='LOCAL_SESSION_CONNECTION_ONLY' or obj['research_access']!='LOCKED' or obj['physical_isolation']!='UNVERIFIED' or
+            obj['status'] not in ('PASS','NO_REGULAR_SAMPLE','INCOMPLETE_WINDOWS') or
+            obj['horizons']!=([1,5,15,30] if obj['status']=='PASS' else [])):
+        raise ValueError('SESSION_CONNECTION_RESULT')
+    return obj
+
+
+def session_connection_check(sample,schedule):
+    report={'scope':'LOCAL_SESSION_CONNECTION_ONLY','status':'NO_REGULAR_SAMPLE','horizons':[],
+            'research_access':'LOCKED','physical_isolation':'UNVERIFIED'}
+    if sample=={'status':'NO_REGULAR_SAMPLE'}:
+        return report
+    if type(sample) is not dict or set(sample)!={'status','session','rows'} or sample['status']!='PASS' or sample['session'] not in schedule:
+        raise ValueError('SESSION_SAMPLE_INVALID')
+    day,offset,length=sample['session']
+    start=session_day_base(day)+570
+    rows=sample['rows']
+    if type(rows) is not list or not 1<=len(rows)<=length or any(type(r) is not list or len(r)!=6 or type(r[0]) is not int or not start<=r[0]<start+length for r in rows):
+        raise ValueError('SESSION_SAMPLE_INVALID')
+    mapped=map_session_rows([sample['session']],[[r[0]-offset,*r[1:]] for r in rows],float_prices=True)
+    if mapped['outside'] or len(mapped['sessions'])!=1 or len(mapped['sessions'][0]['rows'])!=len(rows):
+        raise ValueError('SESSION_SAMPLE_MAPPING')
+    relative=mapped['sessions'][0]['rows']
+    by_minute={r[0]:r[1:] for r in relative}
+    all_nonempty=True
+    for h in RESEARCH_HORIZONS:
+        result=aggregate_session_rows(relative,length,h,float_prices=True)
+        expected=[]
+        for begin in range(0,length-length%h,h):
+            window=[by_minute.get(i) for i in range(begin,begin+h)]
+            if None not in window:
+                expected.append((begin,window[0][0],max(r[1] for r in window),min(r[2] for r in window),window[-1][3],sum(r[4] for r in window)))
+        if (result['bars']!=expected or result['missing_windows']+len(expected)!=length//h or
+                result['tail_minutes']!=length%h or result['missing_minutes']!=length-len(relative)):
+            raise ValueError('SESSION_AGGREGATION_MISMATCH')
+        all_nonempty=all_nonempty and bool(expected)
+    report['status']='PASS' if all_nonempty else 'INCOMPLETE_WINDOWS'
+    report['horizons']=[1,5,15,30] if all_nonempty else []
+    return report
+
+
+def market_batch_adapter_probe(parent,*,integration=False):
     parent=local_folder(str(parent))
-    receipt=parent/BATCH_ADAPTER_REPORT
+    receipt=parent/(SESSION_CONNECTION_REPORT if integration else BATCH_ADAPTER_REPORT)
+    attempt=parent/(SESSION_CONNECTION_ATTEMPT if integration else BATCH_ADAPTER_ATTEMPT)
+    validate=session_connection_result if integration else batch_adapter_result
     if receipt.is_file():
         with receipt.open('rb') as f:
-            return batch_adapter_result(f.read(4097))
-    if (parent/BATCH_ADAPTER_ATTEMPT).exists():
+            return validate(f.read(4097))
+    if attempt.exists():
         raise ValueError('BATCH_ATTEMPT_EXISTS')
     # Require completed structural probe; its legacy receipt does not bind
     # identity. Recheck current selection, do not assert it is the same member.
     with (parent/FOOTER_REPORT).open('rb') as f:
         footer_result(f.read(8193))
+    if integration:
+        with (parent/BATCH_ADAPTER_REPORT).open('rb') as f:
+            if batch_adapter_result(f.read(4097))['status']!='PASS':
+                raise ValueError('BATCH_PREREQUISITE')
     gate=source_gate_receipt(parent)
+    schedule=None
+    if integration:
+        with (parent/CALENDAR_RECEIPT).open('rb') as f:
+            calendar_raw=f.read(131073)
+        if len(calendar_raw)>131072 or hashlib.sha256(calendar_raw).hexdigest()!=gate['calendar_sha256']:
+            raise ValueError('SESSION_CALENDAR_CHANGED')
+        schedule=json.loads(calendar_raw)['sessions']
     with (parent/'market_monthly_quality_selection.local.json').open('rb') as f:
         selected_raw=f.read(QUALITY_RECEIPT_LIMIT+1)
     if hashlib.sha256(selected_raw).hexdigest()!=gate['selection_sha256']:
@@ -2492,8 +2596,8 @@ def market_batch_adapter_probe(parent):
     python=target/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
     if not python.is_file():
         raise ValueError('PARQUET_NOT_INSTALLED')
-    with (parent/BATCH_ADAPTER_ATTEMPT).open('xb') as f:
-        f.write(b'ONE_MEMBER_LOGICAL_PREFIX_VALIDATION\n')
+    with attempt.open('xb') as f:
+        f.write(b'ONE_MEMBER_SESSION_CONNECTION\n' if integration else b'ONE_MEMBER_LOGICAL_PREFIX_VALIDATION\n')
         f.flush()
         os.fsync(f.fileno())
     if load_market_candidates(parent)[0]!=gate['catalog_sha256']:
@@ -2501,10 +2605,22 @@ def market_batch_adapter_probe(parent):
     raw=footer_member_bytes(archive,row['member'],row['size'],row['crc32'])
     if load_market_candidates(parent)[0]!=gate['catalog_sha256']:
         raise ValueError('BATCH_SOURCE_CHANGED')
-    done=subprocess.run([str(python),'-I','-c',BATCH_ADAPTER_WORKER],input=raw,cwd=str(parent),
+    args=[str(python),'-I','-c',BATCH_ADAPTER_WORKER]
+    if integration:
+        calendar=json.dumps(schedule,separators=(',',':')).encode('utf-8')
+        if len(calendar)>65536:
+            raise ValueError('SESSION_CALENDAR_LIMIT')
+        raw=len(calendar).to_bytes(4,'little')+calendar+raw
+        args.append('--session-sample')
+    done=subprocess.run(args,input=raw,cwd=str(parent),
                         env=parquet_env(),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
                         timeout=120,check=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-    report=batch_adapter_result(done.stdout)
+    if integration:
+        if len(done.stdout)>131072:
+            raise ValueError('SESSION_SAMPLE_LIMIT')
+        report=session_connection_check(json.loads(done.stdout),schedule)
+    else:
+        report=batch_adapter_result(done.stdout)
     payload=json.dumps(report,sort_keys=True).encode('utf-8')
     atomic(receipt,payload)
     with receipt.open('rb') as f:
@@ -2692,7 +2808,7 @@ def install_runner_controls(owner):
     # does not compete with any of the research or update controls.
     report_row=ttk.Frame(footer)
     report_row.pack(fill='x',pady=(4,0))
-    owner.batch_adapter_btn=ttk.Button(report_row,text='実データ接続検査',command=owner.run_batch_adapter_probe)
+    owner.batch_adapter_btn=ttk.Button(report_row,text='実データ集計接続',command=owner.run_batch_adapter_probe)
     owner.batch_adapter_btn.pack(side='left',padx=2)
     owner.diag_btn=ttk.Button(report_row,text='デバッグ報告',command=owner.open_diagnostics)
     owner.diag_btn.pack(side='right',padx=2)
@@ -2750,14 +2866,22 @@ class DataDesktop(UpdateDesktop):
         if self.closing or self.parquet_busy or self.catalog_busy or self.folder_dialog is not None:
             return
         parent=Path(self.path).parent
-        if not (parent/BATCH_ADAPTER_REPORT).is_file() and not messagebox.askyesno('実データ接続検査','既存候補1銘柄だけをメモリ展開し、日時順序と2025年以前のOHLCV形式を確認します。2026年日時列や境界の圧縮ページは内部復号される場合があります。2026年価格の分析・評価や科学研究は実行しません。',parent=self.root):
+        integration=(parent/BATCH_ADAPTER_REPORT).is_file()
+        dest=parent/(SESSION_CONNECTION_REPORT if integration else BATCH_ADAPTER_REPORT)
+        if not dest.is_file() and not messagebox.askyesno('実データ接続検査',
+                '既存候補1銘柄の最初の観測済み取引日だけを1・5・15・30分足へ接続します。集計の整合性確認のみ。2026年の価格分析・科学研究・結果値の外部出力は行いません。' if integration else
+                '既存候補1銘柄だけをメモリ展開し、日時順序と2025年以前のOHLCV形式を確認します。2026年日時列や境界の圧縮ページは内部復号される場合があります。2026年価格の分析・評価や科学研究は実行しません。',parent=self.root):
             return
         self.parquet_busy=True
         self.batch_adapter_btn.configure(state='disabled')
         results=queue.Queue()
         def run():
             try:
-                results.put(batch_adapter_text(market_batch_adapter_probe(parent)))
+                report=market_batch_adapter_probe(parent,integration=integration)
+                if integration:
+                    results.put('実データ集計接続（1候補・1取引日）\n結果：'+report['status']+'\n1・5・15・30分足の整合性検査 / 研究実行ロック中\n2026年評価なし / 物理隔離未保証 / カレンダー完全性未検証\n価格・銘柄・日時・集計値の出力なし')
+                else:
+                    results.put(batch_adapter_text(report))
             except Exception:
                 results.put('実データ接続検査：停止（設定・既試行・整合性・読み取りを確認）。研究実行ロック中。')
         def poll():
