@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 import tempfile
+from contextlib import closing
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import unittest
@@ -21,7 +22,7 @@ scope=dict(base64=base64,hashlib=hashlib,json=json,os=os,re=re,sqlite3=sqlite3,P
 exec(compile(ast.Module(body=nodes,type_ignores=[]),str(SOURCE),'exec'),scope)
 
 def fixture_db(p):
-    with sqlite3.connect(p) as db:
+    with closing(sqlite3.connect(p)) as db, db:
         db.execute('CREATE TABLE guard (id INTEGER PRIMARY KEY,owner TEXT,status TEXT,deadline TEXT,checkpoint TEXT)')
         db.execute('CREATE TABLE completed (task TEXT,revision TEXT,owner TEXT,finished TEXT,PRIMARY KEY(task,revision))')
         db.execute("INSERT INTO guard VALUES(1,'previous','released','old','private-checkpoint')")
@@ -74,7 +75,7 @@ class DualGuardTests(unittest.TestCase):
     def test_roundtrip_preserves_checkpoint_and_completion(self):
         self.assertEqual(self.run_pilot(),'PASS')
         self.assertEqual((self.api.writes,self.api.comments,self.api.lease['status']),(2,1,'idle'))
-        with sqlite3.connect(self.db) as c:
+        with closing(sqlite3.connect(self.db)) as c, c:
             self.assertEqual(c.execute('SELECT status,checkpoint FROM guard').fetchone(),('released','private-checkpoint'))
             self.assertEqual(c.execute('SELECT task FROM completed').fetchone(),('CTL-004',))
         self.assertEqual(self.run_pilot(),'PASS')
@@ -85,12 +86,12 @@ class DualGuardTests(unittest.TestCase):
             self.run_pilot()
         self.assertEqual(self.api.writes,0)
     def test_active_local_stops_without_write(self):
-        with sqlite3.connect(self.db) as c:
+        with closing(sqlite3.connect(self.db)) as c, c:
             c.execute("UPDATE guard SET owner='foreign',status='active'")
         with self.assertRaises(ValueError):
             self.run_pilot()
         self.assertEqual(self.api.writes,0)
-        with sqlite3.connect(self.db) as c:
+        with closing(sqlite3.connect(self.db)) as c, c:
             self.assertEqual(c.execute('SELECT owner,status,checkpoint FROM guard').fetchone(),('foreign','active','private-checkpoint'))
     def test_cas_conflict_no_retry(self):
         self.api.race=True
