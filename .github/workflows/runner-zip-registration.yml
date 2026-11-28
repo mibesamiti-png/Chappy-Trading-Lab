@@ -1,7 +1,7 @@
 name: Runner ZIP registration
 on:
   push:
-    branches: [chat/runner-zip-registration-20261128, chat/runner-zip-diagnostics-20261128, chat/runner-zip-research-probe-20261128, chat/runner-parquet-probe-20261128, chat/runner-market-catalog-20261128]
+    branches: [chat/runner-zip-registration-20261128, chat/runner-zip-diagnostics-20261128, chat/runner-zip-research-probe-20261128, chat/runner-parquet-probe-20261128, chat/runner-market-catalog-20261128, chat/runner-market-selection-20261128]
   pull_request:
     branches: [chat/runner-source-releases-20261128]
     paths:
@@ -9,6 +9,7 @@ on:
       - 'tests/test_runner_zip_registration.py'
       - 'tests/test_runner_zip_probe.py'
       - 'tests/test_runner_zip_catalog.py'
+      - 'tests/test_runner_market_selection.py'
       - 'tests/test_runner_parquet_probe.py'
       - '.github/workflows/runner-zip-registration.yml'
       - 'operations/runner_release.json'
@@ -36,5 +37,7 @@ jobs:
           python -m unittest discover -s tests -p 'test_runner_zip_*.py' -v
       - name: Install isolated PyArrow and run actual artificial Parquet checks
         run: python -m unittest discover -s tests -p test_runner_parquet_probe.py -v
+      - name: Exercise selection and artificial OHLCV audit
+        run: python -m unittest discover -s tests -p test_runner_market_selection.py -v
       - name: Verify release manifest for changed files
         run: python tests/verify_runner_zip_manifest.py

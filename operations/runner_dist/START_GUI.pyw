@@ -561,6 +561,186 @@ def catalog_registered(parent):
     return len(results), total, sum(len(a['parquet_candidates']) for a in results)
 
 
+SELECTION_MAX = 128
+
+
+def load_market_candidates(parent):
+    parent = local_folder(str(parent))
+    paths = zip_paths(read_folders(parent / 'research_folders.local.json').get('market_zips', []))
+    with (parent / 'market_zip_catalog.local.json').open('rb') as f:
+        raw = f.read(CATALOG_MAX_RECEIPT + 1)
+    if len(raw) > CATALOG_MAX_RECEIPT:
+        raise ValueError('SELECTION_CATALOG_LIMIT')
+    catalog = json.loads(raw)
+    if (type(catalog) is not dict or catalog.get('schema') != 1 or
+            catalog.get('scope') != 'LOCAL_METADATA_ONLY' or catalog.get('member_reads') != 0 or
+            catalog.get('research_access') != 'LOCKED' or type(catalog.get('archives')) is not list):
+        raise ValueError('SELECTION_CATALOG_INVALID')
+    archives = catalog['archives']
+    if not paths or [a['archive'] for a in archives] != paths:
+        raise ValueError('SELECTION_CATALOG_STALE')
+    rows = []
+    seen = set()
+    for idx, a in enumerate(archives):
+        info = local_zip(a['archive']).stat()
+        if info.st_size != a['size'] or info.st_mtime_ns != a['mtime_ns']:
+            raise ValueError('SELECTION_CATALOG_STALE')
+        candidates = a['parquet_candidates']
+        if type(candidates) is not list or len(candidates) > CATALOG_MAX_ENTRIES:
+            raise ValueError('SELECTION_CATALOG_INVALID')
+        for entry in candidates:
+            name = entry['member']
+            if (type(name) is not str or not name.lower().endswith('.parquet') or len(name) > 1024 or
+                    '\\' in name or any(p in ('', '.', '..') or ':' in p for p in name.split('/')) or
+                    any(ord(c) < 32 for c in name) or re.search(r'2026|holdout|封印', name, re.I) or
+                    entry['access'] != 'LOCKED_UNVERIFIED_PERIOD' or type(entry['size']) is not int or
+                    entry['size'] < 0):
+                raise ValueError('SELECTION_CATALOG_INVALID')
+            key = (idx, name.casefold())
+            if key in seen or len(rows) >= CATALOG_MAX_TOTAL_ENTRIES:
+                raise ValueError('SELECTION_CATALOG_INVALID')
+            seen.add(key)
+            rows.append({'archive_index': idx, 'member': name, 'size': entry['size']})
+    return hashlib.sha256(raw).hexdigest(), rows
+
+
+def save_market_selection(parent, catalog_hash, selected):
+    current_hash, rows = load_market_candidates(parent)
+    if current_hash != catalog_hash:
+        raise ValueError('SELECTION_CATALOG_STALE')
+    if not 1 <= len(selected) <= SELECTION_MAX:
+        raise ValueError('SELECTION_LIMIT')
+    keys = [(r['archive_index'], r['member']) for r in selected]
+    current = {(r['archive_index'], r['member']): r for r in rows}
+    if len(set(keys)) != len(keys) or any(k not in current for k in keys):
+        raise ValueError('SELECTION_INVALID')
+    receipt = {'schema': 1, 'catalog_sha256': current_hash,
+               'scope': 'LOCAL_SELECTION_ONLY', 'research_access': 'LOCKED',
+               'member_reads': 0, 'selected': [current[k] for k in keys]}
+    raw = json.dumps(receipt, ensure_ascii=False, sort_keys=True).encode('utf-8')
+    dest = parent / 'market_selection.local.json'
+    atomic(dest, raw)
+    with dest.open('rb') as f:
+        if f.read(len(raw) + 1) != raw:
+            raise ValueError('SELECTION_RECEIPT_MISMATCH')
+    return len(keys)
+
+
+OHLCV_WORKER = r'''
+import io, json, zipfile, time
+from datetime import datetime, timezone, timedelta
+import pyarrow as pa
+import pyarrow.parquet as pq
+from collections import Counter
+
+def audit(table):
+    assert table.schema.names == ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+    assert table.schema.field('timestamp').type == pa.timestamp('us', tz='UTC')
+    assert all(table.schema.field(n).type == pa.int64() for n in ('open','high','low','close','volume'))
+    assert 0 < table.num_rows <= 4096
+    # Convert UTC microseconds explicitly; avoid OS timezone database dependency.
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    ticks = table['timestamp'].cast(pa.int64()).to_pylist()
+    rows = table.drop(['timestamp']).to_pylist()
+    for row, tick in zip(rows, ticks):
+        row['timestamp'] = None if tick is None else epoch + timedelta(microseconds=tick)
+    # Artificial data only: never inspect a real mixed-period member.
+    if any(r['timestamp'] is None or r['timestamp'].year >= 2026 or r['timestamp'].year < 2000 for r in rows):
+        raise ValueError('PERIOD_LOCKED')
+    counts = Counter()
+    seen = set()
+    prev = None
+    for row in rows:
+        t = row['timestamp']
+        if t in seen:
+            counts['duplicates'] += 1
+        seen.add(t)
+        if prev is not None and t < prev:
+            counts['out_of_order'] += 1
+        # Gaps within the same UTC day only; not a trading-session calendar.
+        if prev is not None and t.date() == prev.date() and t > prev:
+            delta = int((t-prev).total_seconds())
+            if delta > 60:
+                counts['gap_minutes'] += delta // 60 - 1
+        prev = t
+        if t.second or t.microsecond:
+            counts['off_minute'] += 1
+        o,h,l,c,v = (row[k] for k in ('open','high','low','close','volume'))
+        if None in (o,h,l,c,v):
+            counts['null_rows'] += 1
+        elif min(o,h,l,c) <= 0 or h < max(o,l,c) or l > min(o,h,c) or v < 0:
+            counts['invalid_ohlcv'] += 1
+    return {k: counts[k] for k in ('duplicates','out_of_order','gap_minutes','off_minute','null_rows','invalid_ohlcv')}
+
+def make(times, values):
+    table = pa.table({'timestamp':pa.array(times, type=pa.timestamp('us', tz='UTC')),
+                      **{k:pa.array([r[i] for r in values], type=pa.int64()) for i,k in enumerate(('open','high','low','close','volume'))}})
+    b = io.BytesIO()
+    pq.write_table(table,b)
+    return b.getvalue()
+
+def fixture(times, values):
+    b=io.BytesIO()
+    with zipfile.ZipFile(b,'w',compression=zipfile.ZIP_STORED) as z:
+        z.writestr('synthetic/one.parquet',make(times,values))
+        z.writestr('synthetic/unused.parquet',b'not parquet')
+    return b.getvalue()
+
+def selected(archive):
+    with zipfile.ZipFile(io.BytesIO(archive)) as z:
+        item=z.getinfo('synthetic/one.parquet')
+        assert item.file_size <= 512*1024
+        with z.open(item) as f:
+            raw=f.read(512*1024+1)
+        assert len(raw)==item.file_size
+    with pq.ParquetFile(io.BytesIO(raw),pre_buffer=False) as p:
+        return audit(p.read(use_threads=False))
+
+def t(m,sec=0):
+    return datetime(2025,1,2,14,m,sec,tzinfo=timezone.utc)
+valid=(10,12,9,11,3)
+start=time.perf_counter_ns()
+result=selected(fixture([t(0),t(1),t(1),t(4),t(3),t(5,1)],
+                        [valid,valid,valid,(10,8,9,11,3),valid,(10,12,None,11,3)]))
+assert result=={'duplicates':1,'out_of_order':1,'gap_minutes':3,'off_minute':1,'null_rows':1,'invalid_ohlcv':1},result
+assert selected(fixture([t(0),t(1)],[valid,valid]))==dict.fromkeys(result,0)
+try:
+    selected(fixture([t(0),datetime(2026,1,1,tzinfo=timezone.utc)],[valid,valid]))
+except ValueError as exc:
+    assert str(exc)=='PERIOD_LOCKED'
+else:
+    raise RuntimeError('PERIOD_GATE_FAILED')
+print(json.dumps({'scope':'SYNTHETIC_ONLY','audit':result,'period_gate':'PASS',
+                  'elapsed_ms':(time.perf_counter_ns()-start)//1000000,
+                  'arrow_allocated_bytes_at_end':pa.total_allocated_bytes()}))
+'''
+
+
+def synthetic_ohlcv_checkpoint(parent):
+    parent = local_folder(str(parent))
+    target = parent / 'ctl_pyarrow_26_0_1'
+    local_folder(str(target))
+    marker = target / 'ctl-owned.txt'
+    if marker.is_symlink() or not marker.is_file() or marker.stat().st_size != len(b'CTL_PYARROW_26_0_1\n') or marker.read_bytes() != b'CTL_PYARROW_26_0_1\n':
+        raise ValueError('PARQUET_UNOWNED_ENV')
+    python = target / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+    if not python.is_file():
+        raise ValueError('PARQUET_NOT_INSTALLED')
+    raw = parquet_command(python, ['-c', OHLCV_WORKER], parent, 120, capture=True)
+    if len(raw) > 4096:
+        raise ValueError('OHLCV_RECEIPT_LIMIT')
+    receipt = json.loads(raw)
+    expected = {'duplicates':1,'out_of_order':1,'gap_minutes':3,'off_minute':1,'null_rows':1,'invalid_ohlcv':1}
+    if (receipt.get('scope') != 'SYNTHETIC_ONLY' or receipt.get('period_gate') != 'PASS' or receipt.get('audit') != expected):
+        raise ValueError('OHLCV_RECEIPT_INVALID')
+    dest = parent / 'synthetic_ohlcv_probe.local.json'
+    atomic(dest, raw)
+    with dest.open('rb') as f:
+        if f.read(4097) != raw:
+            raise ValueError('OHLCV_RECEIPT_MISMATCH')
+    return receipt
+
+
 class DataDesktop(UpdateDesktop):
     def __init__(self, *args, **kwargs):
         self.folder_dialog = None
@@ -573,10 +753,82 @@ class DataDesktop(UpdateDesktop):
         self.folder_btn.pack(side='left', padx=3)
         self.probe_btn = ttk.Button(self.link_btn.master, text='研究基盤テスト', command=self.run_research_probe)
         self.probe_btn.pack(side='left', padx=3)
+        self.ohlcv_btn = ttk.Button(self.link_btn.master, text='OHLCV人工検査', command=self.run_ohlcv_probe)
+        self.ohlcv_btn.pack(side='left', padx=3)
         self.parquet_btn = ttk.Button(self.link_btn.master, text='Parquet環境', command=self.configure_parquet)
         self.parquet_btn.pack(side='left', padx=3)
         self.catalog_btn = ttk.Button(self.link_btn.master, text='市場ZIP目録', command=self.run_market_catalog)
         self.catalog_btn.pack(side='left', padx=3)
+        self.selection_btn = ttk.Button(self.link_btn.master, text='銘柄候補', command=self.open_market_selection)
+        self.selection_btn.pack(side='left', padx=3)
+
+    def open_market_selection(self):
+        if self.closing or self.catalog_busy or self.parquet_busy or self.folder_dialog is not None:
+            return
+        parent = Path(self.path).parent
+        try:
+            digest, rows = load_market_candidates(parent)
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError):
+            self.log('目録が未作成・変更済み、または不正です。市場ZIP目録を再作成してください。')
+            return
+        dialog = tk.Toplevel(self.root)
+        self.folder_dialog = dialog
+        dialog.title('銘柄候補（ローカル目録のみ）')
+        dialog.geometry('800x570')
+        dialog.transient(self.root)
+        panel = ttk.Frame(dialog, padding=12)
+        panel.pack(fill='both', expand=True)
+        ttk.Label(panel, text='Parquet候補名を検索・選択できます。期間未検証のため実データ読み取りは禁止。').pack(anchor='w')
+        query = tk.StringVar()
+        ttk.Entry(panel, textvariable=query).pack(fill='x', pady=6)
+        table = ttk.Treeview(panel, columns=('archive','member','size'), show='headings', selectmode='extended')
+        for col, title, width in [('archive','ZIP',55),('member','候補ファイル名',500),('size','バイト数',130)]:
+            table.heading(col, text=title)
+            table.column(col, width=width)
+        scroll = ttk.Scrollbar(panel, command=table.yview)
+        table.configure(yscrollcommand=scroll.set)
+        scroll.pack(side='right', fill='y')
+        table.pack(fill='both', expand=True)
+        status = tk.StringVar()
+        def refresh(*_):
+            table.delete(*table.get_children())
+            needle=query.get().casefold()
+            matches=[(i,r) for i,r in enumerate(rows) if needle in r['member'].casefold()]
+            for i,r in matches[:2000]:
+                table.insert('', 'end', iid=str(i), values=(r['archive_index']+1,r['member'],r['size']))
+            status.set(f'一致 {len(matches)}件（表示上限2000件）／研究利用ロック中')
+        query.trace_add('write',refresh)
+        refresh()
+        def save():
+            try:
+                count=save_market_selection(parent,digest,[rows[int(i)] for i in table.selection()])
+                status.set(f'{count}件の選択をPC内に保存。読み取りは未許可。')
+            except (OSError, ValueError, TypeError, KeyError, RecursionError):
+                status.set('保存失敗。目録を再作成し、1～128件を選択してください。')
+        def close():
+            self.folder_dialog=None
+            dialog.destroy()
+        ttk.Label(panel,textvariable=status).pack(anchor='w',pady=6)
+        ttk.Button(panel,text='選択を保存',command=save).pack(side='left')
+        ttk.Button(panel,text='閉じる',command=close).pack(side='left',padx=6)
+        dialog.protocol('WM_DELETE_WINDOW',close)
+        dialog.grab_set()
+
+    def run_ohlcv_probe(self):
+        if self.closing or self.parquet_busy or self.catalog_busy or self.folder_dialog is not None:
+            return
+        self.parquet_busy=True
+        self.ohlcv_btn.configure(state='disabled')
+        parent=Path(self.path).parent
+        def run():
+            try:
+                synthetic_ohlcv_checkpoint(parent)
+                result='人工OHLCV検査成功：欠損・重複・時刻・価格整合・期間制限・保存。'
+            except Exception:
+                result='人工OHLCV検査失敗。Parquet専用環境を確認してください。'
+            self.parquet_results.put(result)
+        threading.Thread(target=run,daemon=False).start()
+        self.root.after(250,self.poll_parquet)
 
     def run_market_catalog(self):
         if self.closing or self.catalog_busy or self.parquet_busy or self.folder_dialog is not None:
@@ -645,6 +897,7 @@ class DataDesktop(UpdateDesktop):
             return
         self.parquet_busy = False
         self.parquet_btn.configure(state='normal')
+        self.ohlcv_btn.configure(state='normal')
         self.log(result + ' 登録市場ZIPは未読。')
 
     def run_research_probe(self):
