@@ -2120,6 +2120,188 @@ def synthetic_prefix_checkpoint(parent):
     return out
 
 
+# Owner-approved single-member metadata inspection, explicit manual action only.
+# No row decoding, no scientific execution, no automatic scan.
+FOOTER_LIMIT=32*1024*1024
+FOOTER_REPORT='market_footer_probe.local.json'
+FOOTER_ATTEMPT='market_footer_probe_attempt.local.json'
+FOOTER_WORKER=r'''
+import io,sys,json
+from datetime import datetime
+import pyarrow as pa
+import pyarrow.parquet as pq
+if pa.__version__!='26.0.1':
+    raise ValueError('FOOTER_VERSION')
+limit=32*1024*1024
+def inspect(raw):
+    if not 12<=len(raw)<=limit or raw[:4]!=b'PAR1' or raw[-4:]!=b'PAR1':
+        raise ValueError('FOOTER_FORMAT')
+    footer_size=int.from_bytes(raw[-8:-4],'little')
+    if not 0<footer_size<=min(len(raw)-12,4*1024*1024):
+        raise ValueError('FOOTER_LIMIT')
+    with pq.ParquetFile(io.BytesIO(raw),pre_buffer=False,thrift_string_size_limit=1048576,
+                        thrift_container_size_limit=100000) as p:
+        schema=p.schema_arrow
+        if not 1<=len(schema)<=32 or not 1<=p.num_row_groups<=4096:
+            raise ValueError('FOOTER_SCHEMA_LIMIT')
+        # Never return arbitrary file-supplied field names or metadata strings.
+        known={'datetime','timestamp','open','high','low','close','volume','source','date','time'}
+        fields=[]
+        for f in schema:
+            name=f.name if f.name.lower() in known and len(f.name)<=16 else 'OTHER'
+            t=f.type
+            if pa.types.is_timestamp(t):
+                kind='timestamp['+t.unit+']'
+                zone='NAIVE' if t.tz is None else 'UTC' if t.tz=='UTC' else 'EASTERN' if t.tz in ('America/New_York','US/Eastern') else 'OTHER'
+            else:
+                kind=str(t) if str(t) in ('double','float','int64','int32','uint64','uint32','string','large_string','date32[day]','date64[ms]','bool') else 'OTHER'
+                zone='NA'
+            fields.append({'name':name,'type':kind,'zone':zone})
+        counts=dict(before=0,crossing=0,reserved=0,unverified=0)
+        candidates=[i for i,f in enumerate(schema) if f.name.lower() in ('datetime','timestamp') and pa.types.is_timestamp(f.type)]
+        col=None
+        cutoff=None
+        if len(candidates)==1 and p.metadata.num_columns==len(schema):
+            j=candidates[0]
+            t=schema[j].type
+            if t.tz in (None,'UTC','America/New_York','US/Eastern'):
+                # UTC cutoff deliberately conservative; naive Eastern basis
+                # is provider documentation, not independently verified.
+                cutoff=(datetime(2026,1,1)-datetime(1970,1,1)).days*86400*{'s':1,'ms':1000,'us':1000000,'ns':1000000000}[t.unit]
+                col=j
+        for i in range(p.num_row_groups):
+            label='unverified'
+            g=p.metadata.row_group(i)
+            if col is not None:
+                chunk=g.column(col)
+                st=chunk.statistics
+                if (chunk.path_in_schema==schema[col].name and g.num_rows>0 and st is not None and
+                        st.has_min_max and st.has_null_count and st.null_count==0 and
+                        type(st.min_raw) is int and type(st.max_raw) is int and st.min_raw<=st.max_raw):
+                    label='before' if st.max_raw<cutoff else 'reserved' if st.min_raw>=cutoff else 'crossing'
+            counts[label]+=1
+        return {'fields':fields,'groups':counts,'row_decodes':0,'physical_isolation':'UNVERIFIED'}
+if sys.argv[1:]==['--fixture']:
+    out=io.BytesIO()
+    schema=pa.schema([('datetime',pa.timestamp('us')),('Close',pa.float64()),('secret_fixture_field',pa.string())])
+    with pq.ParquetWriter(out,schema) as w:
+        for days in ([datetime(2025,12,30)],[datetime(2025,12,31),datetime(2026,1,1)],[datetime(2026,1,2)]):
+            w.write_table(pa.Table.from_pydict({'datetime':days,'Close':[100.0]*len(days),'secret_fixture_field':['invented']*len(days)},schema=schema))
+    print(json.dumps(inspect(out.getvalue())))
+elif not sys.argv[1:]:
+    raw=sys.stdin.buffer.read(limit+1)
+    print(json.dumps(inspect(raw)))
+else:
+    raise ValueError('FOOTER_ARGS')
+'''
+
+
+def footer_result(raw):
+    if len(raw)>8192:
+        raise ValueError('FOOTER_RESULT_LIMIT')
+    out=json.loads(raw)
+    if (type(out) is not dict or set(out)!={'fields','groups','row_decodes','physical_isolation'} or
+            out['row_decodes']!=0 or out['physical_isolation']!='UNVERIFIED'):
+        raise ValueError('FOOTER_RESULT')
+    fields=out['fields']
+    if type(fields) is not list or not 1<=len(fields)<=32:
+        raise ValueError('FOOTER_RESULT')
+    for field in fields:
+        if (type(field) is not dict or set(field)!={'name','type','zone'} or
+                field['name'].lower() not in ('datetime','timestamp','open','high','low','close','volume','source','date','time','other') or
+                field['type'] not in ('timestamp[s]','timestamp[ms]','timestamp[us]','timestamp[ns]','double','float','int64','int32','uint64','uint32','string','large_string','date32[day]','date64[ms]','bool','OTHER') or
+                field['zone'] not in ('NAIVE','UTC','EASTERN','OTHER','NA')):
+            raise ValueError('FOOTER_RESULT')
+    groups=out['groups']
+    if (type(groups) is not dict or set(groups)!={'before','crossing','reserved','unverified'} or
+            any(type(v) is not int or v<0 for v in groups.values()) or not 1<=sum(groups.values())<=4096):
+        raise ValueError('FOOTER_RESULT')
+    return out
+
+
+def footer_member_bytes(archive,member,size,crc):
+    if type(size) is not int or not 12<=size<=FOOTER_LIMIT or type(crc) is not int or not 0<=crc<=0xffffffff:
+        raise ValueError('FOOTER_MEMBER_LIMIT')
+    # Exact one central-directory entry, no filesystem extraction.
+    with archive.open('rb') as source:
+        before=os.fstat(source.fileno())
+        with zipfile.ZipFile(source) as z:
+            matches=[i for i in z.infolist() if i.filename==member]
+            if len(matches)!=1:
+                raise ValueError('FOOTER_MEMBER_IDENTITY')
+            item=matches[0]
+            if (item.file_size!=size or item.CRC!=crc or item.flag_bits&1 or
+                    item.compress_type not in (zipfile.ZIP_STORED,zipfile.ZIP_DEFLATED) or
+                    not 0<item.compress_size<=FOOTER_LIMIT):
+                raise ValueError('FOOTER_MEMBER_IDENTITY')
+            with z.open(item) as stream:
+                raw=stream.read(size+1)
+            if len(raw)!=size:
+                raise ValueError('FOOTER_MEMBER_LENGTH')
+        after=os.fstat(source.fileno())
+    if (before.st_size,before.st_mtime_ns,before.st_ino)!=(after.st_size,after.st_mtime_ns,after.st_ino):
+        raise ValueError('FOOTER_SOURCE_CHANGED')
+    return raw
+
+
+def market_footer_probe(parent):
+    parent=local_folder(str(parent))
+    receipt=parent/FOOTER_REPORT
+    if receipt.is_file():
+        with receipt.open('rb') as f:
+            return footer_result(f.read(8193))
+    # An interrupted attempt is not silently repeated on another member.
+    if (parent/FOOTER_ATTEMPT).exists():
+        raise ValueError('FOOTER_ATTEMPT_EXISTS')
+    gate=source_gate_receipt(parent)
+    with (parent/'market_monthly_quality_selection.local.json').open('rb') as f:
+        selected_raw=f.read(QUALITY_RECEIPT_LIMIT+1)
+    if hashlib.sha256(selected_raw).hexdigest()!=gate['selection_sha256']:
+        raise ValueError('FOOTER_SELECTION_CHANGED')
+    selected=json.loads(selected_raw)['selected']
+    row=next((r for r in selected if 12<=r['size']<=FOOTER_LIMIT),None)
+    if row is None:
+        raise ValueError('FOOTER_NO_BOUNDED_CANDIDATE')
+    paths=zip_paths(read_folders(parent/'research_folders.local.json').get('market_zips',[]))
+    archive=local_zip(paths[row['archive_index']])
+    target=local_folder(str(parent/'ctl_pyarrow_26_0_1'))
+    marker=target/'ctl-owned.txt'
+    if marker.is_symlink() or not marker.is_file() or marker.stat().st_size!=len(b'CTL_PYARROW_26_0_1\n') or marker.read_bytes()!=b'CTL_PYARROW_26_0_1\n':
+        raise ValueError('PARQUET_UNOWNED_ENV')
+    python=target/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
+    if not python.is_file():
+        raise ValueError('PARQUET_NOT_INSTALLED')
+    # Exclusive create before any actual member access, once per installation.
+    with (parent/FOOTER_ATTEMPT).open('xb') as f:
+        f.write(b'ONE_MEMBER_METADATA_ONLY\n')
+        f.flush()
+        os.fsync(f.fileno())
+    if load_market_candidates(parent)[0]!=gate['catalog_sha256']:
+        raise ValueError('FOOTER_SOURCE_CHANGED')
+    raw=footer_member_bytes(archive,row['member'],row['size'],row['crc32'])
+    if load_market_candidates(parent)[0]!=gate['catalog_sha256']:
+        raise ValueError('FOOTER_SOURCE_CHANGED')
+    done=subprocess.run([str(python),'-I','-c',FOOTER_WORKER],input=raw,cwd=str(parent),
+                        env=parquet_env(),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+                        timeout=120,check=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    report=footer_result(done.stdout)
+    payload=json.dumps(report,sort_keys=True).encode('utf-8')
+    atomic(receipt,payload)
+    with receipt.open('rb') as f:
+        if f.read(8193)!=payload:
+            raise ValueError('FOOTER_SAVE_FAILED')
+    return report
+
+
+def footer_report_text(report):
+    lines=['実Parquet構造確認（1候補・メタデータのみ）','データ行復号 0 / 2026年評価なし / 研究実行ロック中',
+           '物理的期間隔離：未検証','列構造：']
+    lines.extend(f"  {f['name']}: {f['type']} / {f['zone']}" for f in report['fields'])
+    g=report['groups']
+    lines.append(f"行グループ分類（メタデータ上）：2025年以前 {g['before']} / 境界混在 {g['crossing']} / 封印期間 {g['reserved']} / 判定不能 {g['unverified']}")
+    return '\n'.join(lines)
+
+
 # A fixed, local acceptance suite once per installed release.
 DIAG_FILE='runner_diagnostics.local.json'
 DIAG_LIMIT=16384
@@ -2182,7 +2364,7 @@ def diagnostic_read(parent,version):
 def diagnostic_text(report):
     # Render only fixed labels, enumerated codes and numeric timings.
     lines=['Chappy Trading Lab '+report['version']+' 自動デバッグ報告',
-           '市場ZIP本体未読 / 2026年評価なし / 研究実行ロック中']
+           'この自動検査で市場ZIP本体未読 / 2026年評価なし / 研究実行ロック中']
     for row,(_,label) in zip(report['steps'],DIAG_STEPS):
         lines.append(f"{label}: {row['status']} ({row['ms']/1000:.2f}秒)")
     lines.append(f"成功 {sum(r['status']=='PASS' for r in report['steps'])}/{len(DIAG_STEPS)} / 未設定 {sum(r['status']=='SKIP_NOT_CONFIGURED' for r in report['steps'])}")
@@ -2276,6 +2458,7 @@ def install_runner_controls(owner):
         ('catalog_btn','市場ZIP目録',owner.run_market_catalog),
         ('selection_btn','銘柄候補',owner.open_market_selection),
         ('synthetic_run_btn','人工研究実行',owner.run_synthetic_research),
+        ('footer_probe_btn','実Parquet構造',owner.run_footer_probe),
     )
     for i,(attr,label,command) in enumerate(items):
         btn=ttk.Button(controls,text=label,command=command)
@@ -2303,6 +2486,41 @@ class DataDesktop(UpdateDesktop):
         self.diag_results=queue.Queue()
         install_runner_controls(self)
         self.root.after(800,self.auto_diagnostics)
+
+    def run_footer_probe(self):
+        if self.closing or self.parquet_busy or self.catalog_busy or self.folder_dialog is not None:
+            return
+        parent=Path(self.path).parent
+        if not (parent/FOOTER_REPORT).is_file():
+            if not messagebox.askyesno('実Parquet構造','保存済み候補の1銘柄だけ（32MiB以下）をメモリ展開し、構造情報を確認します。2026年の圧縮バイト・フッターに触れる場合がありますが、データ行の復号、研究・評価、展開ファイル保存は行いません。実行しますか？',parent=self.root):
+                return
+        self.parquet_busy=True
+        self.footer_probe_btn.configure(state='disabled')
+        results=queue.Queue()
+        def run():
+            try:
+                results.put((True,footer_report_text(market_footer_probe(parent))))
+            except Exception:
+                results.put((False,'構造確認停止：未設定・不一致・容量超過・既試行・読み取り失敗のいずれか。再試行は自動実行しません。研究実行ロック中。'))
+        def poll():
+            try:
+                ok,result=results.get_nowait()
+            except queue.Empty:
+                self.root.after(150,poll)
+                return
+            self.parquet_busy=False
+            self.footer_probe_btn.configure(state='normal')
+            self.log(result)
+            if ok:
+                try:
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(result)
+                    self.log('構造確認報告をクリップボードにコピーしました。')
+                except tk.TclError:
+                    self.log('構造確認報告のコピーに失敗しました。')
+        self.log('実Parquet構造確認：1候補・行復号なし。')
+        threading.Thread(target=run,daemon=False).start()
+        self.root.after(150,poll)
 
     def auto_diagnostics(self):
         if self.closing:

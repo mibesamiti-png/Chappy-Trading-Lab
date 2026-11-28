@@ -12,19 +12,20 @@ import sys
 import tempfile
 import unittest
 import unittest.mock
+import zipfile
 
 SOURCE = Path(__file__).resolve().parents[1] / 'operations/runner_dist/START_GUI.pyw'
 tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
 names = {'drive_allowed', 'local_folder', 'parquet_env', 'parquet_command', 'parquet_runtime', 'session_day_base', 'map_session_rows', 'aggregate_session_rows',
          'describe_session_horizon', 'integrated_pipeline_expected', 'integrated_pipeline_analyze',
-         'synthetic_integrated_checkpoint', 'synthetic_prefix_checkpoint'}
+         'synthetic_integrated_checkpoint', 'synthetic_prefix_checkpoint', 'footer_result', 'footer_member_bytes'}
 nodes = [n for n in tree.body if
          isinstance(n, ast.FunctionDef) and n.name in names or
          isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in
                                          {'PARQUET_VERSION', 'PARQUET_WORKER', 'RESEARCH_HORIZONS', 'SESSION_EPOCH',
-                                          'SESSION_FIRST', 'SESSION_LIMIT', 'PIPELINE_RECEIPT', 'PIPELINE_WORKER', 'PREFIX_WORKER'} for t in n.targets)]
+                                          'SESSION_FIRST', 'SESSION_LIMIT', 'PIPELINE_RECEIPT', 'PIPELINE_WORKER', 'PREFIX_WORKER', 'FOOTER_WORKER', 'FOOTER_LIMIT'} for t in n.targets)]
 scope = dict(date=date, math=math, Path=Path, os=os, re=re, stat=stat, sys=sys, json=json,
-             subprocess=subprocess, atomic=lambda p, b: p.write_bytes(b))
+             subprocess=subprocess, zipfile=zipfile, atomic=lambda p, b: p.write_bytes(b))
 exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), 'exec'), scope)
 
 
@@ -64,6 +65,26 @@ class ParquetTests(unittest.TestCase):
             prefix=scope['synthetic_prefix_checkpoint'](p)
             self.assertEqual(prefix['report']['groups_read'],[0])
             self.assertEqual(prefix['physical_isolation'],'UNVERIFIED')
+            python=p/'ctl_pyarrow_26_0_1'/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
+            footer=scope['footer_result'](scope['parquet_command'](python,['-c',scope['FOOTER_WORKER'],'--fixture'],p,120,capture=True))
+            self.assertEqual(footer['groups'],dict(before=1,crossing=1,reserved=1,unverified=0))
+            self.assertEqual(footer['fields'][2]['name'],'OTHER')
+            self.assertEqual(footer['row_decodes'],0)
+
+    def test_single_member_bytes(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'fixture.zip'
+            data=b'invented data bytes'
+            with zipfile.ZipFile(p,'w',compression=zipfile.ZIP_DEFLATED) as z:
+                z.writestr('chosen.parquet',data)
+                z.writestr('unused.parquet',b'not chosen')
+            with zipfile.ZipFile(p) as z:
+                crc=z.getinfo('chosen.parquet').CRC
+            self.assertEqual(scope['footer_member_bytes'](p,'chosen.parquet',len(data),crc),data)
+            with self.assertRaises(ValueError):
+                scope['footer_member_bytes'](p,'chosen.parquet',len(data),crc^1)
+            with self.assertRaises(ValueError):
+                scope['footer_member_bytes'](p,'chosen.parquet',scope['FOOTER_LIMIT']+1,crc)
 
 
 if __name__ == '__main__':

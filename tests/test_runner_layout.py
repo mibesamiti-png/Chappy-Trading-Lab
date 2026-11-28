@@ -32,11 +32,11 @@ class LayoutTests(unittest.TestCase):
         owner.root=root
         calls=[]
         methods=('configure_folders','run_research_probe','run_ohlcv_probe','configure_parquet',
-                 'run_market_catalog','open_market_selection','run_synthetic_research','open_diagnostics')
+                 'run_market_catalog','open_market_selection','run_synthetic_research','run_footer_probe','open_diagnostics')
         for name in methods:
             setattr(owner,name,lambda n=name:calls.append(n))
         scope['install_runner_controls'](owner)
-        names=('folder_btn','probe_btn','ohlcv_btn','parquet_btn','catalog_btn','selection_btn','synthetic_run_btn','diag_btn')
+        names=('folder_btn','probe_btn','ohlcv_btn','parquet_btn','catalog_btn','selection_btn','synthetic_run_btn','footer_probe_btn','diag_btn')
         for geometry in ('640x480','1000x600','640x480'):
             root.geometry(geometry)
             root.update()
