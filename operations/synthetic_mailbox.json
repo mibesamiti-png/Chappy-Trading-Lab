@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "job": "CTL-SYNTH-004",
+  "scope": "SYNTHETIC_ONLY",
+  "operation": "session_aggregation_v1",
+  "sessions": [
+    {
+      "start": 900,
+      "step": -3,
+      "minutes": 75
+    },
+    {
+      "start": 120,
+      "step": 4,
+      "minutes": 45
+    },
+    {
+      "start": 5000,
+      "step": 0,
+      "minutes": 30
+    }
+  ],
+  "horizons": [
+    1,
+    5,
+    15,
+    30
+  ]
+}
