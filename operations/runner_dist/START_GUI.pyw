@@ -1810,6 +1810,133 @@ def synthetic_statistics_checkpoint(parent):
     return receipt
 
 
+# Fixed end-to-end synthetic fixture. No path, member or date arguments.
+PIPELINE_RECEIPT='synthetic_integrated_pipeline.local.json'
+PIPELINE_WORKER=r'''
+import io,json,zipfile
+from datetime import datetime,timezone,timedelta
+import pyarrow as pa
+import pyarrow.parquet as pq
+if pa.__version__!='26.0.1':
+    raise ValueError('PIPELINE_ARROW_VERSION')
+epoch=datetime(1970,1,1,tzinfo=timezone.utc)
+def build(rows):
+    table=pa.table({'timestamp':pa.array([r[0] for r in rows],type=pa.timestamp('us',tz='UTC')),
+                    **{k:pa.array([r[i+1] for r in rows],type=pa.int64()) for i,k in enumerate(('open','high','low','close','volume'))}})
+    buffer=io.BytesIO()
+    pq.write_table(table,buffer)
+    archive=io.BytesIO()
+    with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr('synthetic/selected.parquet',buffer.getvalue())
+        z.writestr('synthetic/unused.parquet',b'not parquet')
+    return archive.getvalue()
+def read(raw):
+    with zipfile.ZipFile(io.BytesIO(raw)) as z:
+        item=z.getinfo('synthetic/selected.parquet')
+        if item.file_size>512*1024:
+            raise ValueError('PIPELINE_MEMBER_LIMIT')
+        with z.open(item) as f:
+            member=f.read(512*1024+1)
+        if len(member)!=item.file_size:
+            raise ValueError('PIPELINE_MEMBER_LENGTH')
+    with pq.ParquetFile(io.BytesIO(member),pre_buffer=False) as p:
+        if p.metadata.num_rows>512 or p.schema_arrow.names!=['timestamp','open','high','low','close','volume']:
+            raise ValueError('PIPELINE_SCHEMA')
+        table=p.read(use_threads=False)
+    if table.schema.field('timestamp').type!=pa.timestamp('us',tz='UTC') or any(table.schema.field(k).type!=pa.int64() for k in ('open','high','low','close','volume')):
+        raise ValueError('PIPELINE_SCHEMA')
+    # Same integer UTC conversion as the previously validated OHLCV worker.
+    # Avoid Arrow's platform-dependent timezone-object conversion.
+    ticks=table['timestamp'].cast(pa.int64()).to_pylist()
+    columns=[table[name].to_pylist() for name in ('open','high','low','close','volume')]
+    first=(datetime(2000,1,1,tzinfo=timezone.utc)-epoch).days*86400000000
+    limit=(datetime(2026,1,1,tzinfo=timezone.utc)-epoch).days*86400000000
+    result=[]
+    for tick,*prices in zip(ticks,*columns):
+        if type(tick) is not int or not first<=tick<limit:
+            raise ValueError('PIPELINE_PERIOD')
+        if tick%60000000 or any(type(v) is not int for v in prices):
+            raise ValueError('PIPELINE_ROW')
+        result.append([tick//60000000,*prices])
+    return result
+rows=[]
+for start,length,price in [(datetime(2025,1,6,14,30,tzinfo=timezone.utc),60,100),
+                           (datetime(2025,7,7,13,30,tzinfo=timezone.utc),45,200)]:
+    for i in range(-1,length+1):
+        if price==100 and i==7:
+            continue
+        rows.append((start+timedelta(minutes=i),price,price,price,price,2))
+out=read(build(rows))
+try:
+    read(build([(datetime(2026,1,1,tzinfo=timezone.utc),1,1,1,1,1)]))
+except ValueError as exc:
+    if str(exc)!='PIPELINE_PERIOD':
+        raise
+else:
+    raise ValueError('PIPELINE_GATE_FAILED')
+print(json.dumps({'scope':'SYNTHETIC_ONLY','period_gate':'PASS','rows':out},allow_nan=False))
+'''
+
+
+def integrated_pipeline_expected():
+    # All prices are constant inside each session, but different across
+    # sessions. Missing minute 7 and outside rows are never bridged.
+    return {'1':(104,1,0,103,101,208),'5':(20,1,0,19,17,200),
+            '15':(6,1,0,5,4,180),'30':(2,1,15,1,0,120)}
+
+
+def integrated_pipeline_analyze(raw):
+    if len(raw)>65536:
+        raise ValueError('PIPELINE_OUTPUT_LIMIT')
+    data=json.loads(raw)
+    if type(data) is not dict or set(data)!={'scope','period_gate','rows'} or data['scope']!='SYNTHETIC_ONLY' or data['period_gate']!='PASS':
+        raise ValueError('PIPELINE_WORKER_RECEIPT')
+    rows=data['rows']
+    if type(rows) is not list or len(rows)!=108:
+        raise ValueError('PIPELINE_ROW_COUNT')
+    mapped=map_session_rows([('2025-01-06',-300,60),('2025-07-07',-240,45)],rows)
+    if mapped['outside']!=4 or [len(s['rows']) for s in mapped['sessions']]!=[59,45]:
+        raise ValueError('PIPELINE_SESSION_COUNT')
+    sessions=[(s['length'],s['rows']) for s in mapped['sessions']]
+    results={}
+    keys=('complete_bars','missing_windows','tail_minutes','possible_pairs','observed_pairs','volume_sum')
+    for horizon in RESEARCH_HORIZONS:
+        report=describe_session_horizon(sessions,horizon)
+        if tuple(report[k] for k in keys)!=integrated_pipeline_expected()[str(horizon)]:
+            raise ValueError('PIPELINE_RESULT_COUNT')
+        n=report['observed_pairs']
+        if (report['positive'] or report['negative'] or report['zero']!=n or
+                report['mean_return']!=(0.0 if n else None) or
+                report['mean_absolute_return']!=(0.0 if n else None) or
+                report['sample_return_sd']!=(0.0 if n>1 else None)):
+            raise ValueError('PIPELINE_RESULT_VALUE')
+        results[str(horizon)]=report
+    return {'schema':1,'scope':'SYNTHETIC_ONLY','protocol':'zip-parquet-session-statistics-v1',
+            'market_member_reads':0,'holdout_evaluation':'NOT_PERFORMED',
+            'rows':len(rows),'outside':mapped['outside'],'results':results}
+
+
+def synthetic_integrated_checkpoint(parent):
+    parent=local_folder(str(parent))
+    target=parent/'ctl_pyarrow_26_0_1'
+    local_folder(str(target))
+    marker=target/'ctl-owned.txt'
+    if marker.is_symlink() or not marker.is_file() or marker.stat().st_size!=len(b'CTL_PYARROW_26_0_1\n') or marker.read_bytes()!=b'CTL_PYARROW_26_0_1\n':
+        raise ValueError('PARQUET_UNOWNED_ENV')
+    python=target/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
+    if not python.is_file():
+        raise ValueError('PARQUET_NOT_INSTALLED')
+    raw=parquet_command(python,['-c',PIPELINE_WORKER],parent,120,capture=True)
+    result=integrated_pipeline_analyze(raw)
+    payload=json.dumps(result,sort_keys=True,allow_nan=False).encode('utf-8')
+    dest=parent/PIPELINE_RECEIPT
+    atomic(dest,payload)
+    with dest.open('rb') as f:
+        if f.read(65537)!=payload:
+            raise ValueError('PIPELINE_SAVE_FAILED')
+    return result
+
+
 # A fixed, local acceptance suite once per installed release.
 DIAG_FILE='runner_diagnostics.local.json'
 DIAG_LIMIT=16384
@@ -1822,6 +1949,7 @@ DIAG_STEPS=(('zip','人工ZIP・期間制限'),('parquet','既存Parquet環境')
             ('calendar_fixture','人工カレンダー・限定SQL検査'),
             ('calendar_index','既存索引の2025年以前カレンダー'),
             ('statistics','人工記述統計・欠損境界検査'),
+            ('pipeline','人工ZIP・Parquet・統計の統合検査'),
             ('quality','保存済み月別選択の再現確認'))
 DIAG_CODES=('PASS','SKIP_NOT_CONFIGURED','FAIL_TIMEOUT','FAIL_IO','FAIL_VALIDATION','FAIL_REPRODUCIBILITY','FAIL_INTERNAL')
 
@@ -1895,6 +2023,7 @@ def diagnostic_run(parent,version,notify=lambda *_:None):
         'calendar_fixture':synthetic_calendar_probe,
         'calendar_index':lambda:calendar_index_checkpoint(parent),
         'statistics':lambda:synthetic_statistics_checkpoint(parent),
+        'pipeline':lambda:synthetic_integrated_checkpoint(parent),
         'quality':lambda:diagnostic_quality(parent),
     }
     rows=[]
@@ -1904,7 +2033,7 @@ def diagnostic_run(parent,version,notify=lambda *_:None):
         status='PASS'
         try:
             # Missing optional artifacts are not counted as success.
-            if key in ('parquet','ohlcv') and not (parent/'ctl_pyarrow_26_0_1').is_dir():
+            if key in ('parquet','ohlcv','pipeline') and not (parent/'ctl_pyarrow_26_0_1').is_dir():
                 raise FileNotFoundError()
             if key=='catalog' and not (parent/'market_zip_catalog.local.json').is_file():
                 raise FileNotFoundError()
@@ -1914,7 +2043,7 @@ def diagnostic_run(parent,version,notify=lambda *_:None):
                 raise FileNotFoundError()
             actions[key]()
         except FileNotFoundError:
-            status='SKIP_NOT_CONFIGURED' if key in ('parquet','ohlcv','checkpoint','catalog','quality','calendar_index') else 'FAIL_IO'
+            status='SKIP_NOT_CONFIGURED' if key in ('parquet','ohlcv','checkpoint','catalog','quality','calendar_index','pipeline') else 'FAIL_IO'
         except subprocess.TimeoutExpired:
             status='FAIL_TIMEOUT'
         except (OSError,subprocess.CalledProcessError):
