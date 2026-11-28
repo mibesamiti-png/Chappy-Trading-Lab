@@ -1,8 +1,8 @@
 {
   "files": {
-    "START_GUI.pyw": "b0a3eb18bbca680d0e5ffa95b92f377c93789e4083bd505b51acad4e2c2be256",
+    "START_GUI.pyw": "ac371f4b71ff753af8a8b4aa900892da0e123003e13643c2ba2a0524bc3ceeca",
     "api_bridge.py": "9fe3bc27ae45554d5d069a45d9aad5e36c873c290bca0260bc4c388ff98cf7c4",
-    "app_version.py": "7fd2e8c7696852ea2cbbdc63d60d5fc4626a15bb2b6c44fdb2a1fd63108ab5b9",
+    "app_version.py": "eed8a71b3642778553925b2fc6e0a939c2fc9da19997410aa1490424255eb43e",
     "desktop.py": "76d0c2b0655150f41308ae79e8b3419c97a30ddad2dbc726321ae0a7c828c502",
     "synthetic_mailbox.py": "637396af2621023165e1533fc9a0cec83f051d6f1419a6c07fa811db9f172e5a",
     "vault.py": "3a653fbc656016e1a2236107f62d08fbda57631c21dd5185ca86e338e56e2ad2"
@@ -10,5 +10,5 @@
   "min_launcher": 1,
   "schema": 1,
   "scope": "SYNTHETIC_ONLY",
-  "version": "0.8.7"
+  "version": "0.8.8"
 }
