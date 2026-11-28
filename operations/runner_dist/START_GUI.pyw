@@ -1129,6 +1129,158 @@ def index_column_map(parent):
     return out
 
 
+# Fixed, retrospective monthly index selection; never opens market members.
+QUALITY_MONTHS=tuple(f'{y:04d}-{m:02d}' for y in range(2022,2026) for m in range(1,13) if y!=2022 or m>=3)
+QUALITY_COLUMNS={'symbols':('ticker','member','member_bytes','member_crc32'),
+                 'monthly_coverage':('ticker','month','observed_regular_minutes','scheduled_minutes_in_observed_span')}
+QUALITY_ROW_LIMIT=100000
+QUALITY_RECEIPT_LIMIT=1024*1024
+
+
+def quality_authorizer(action,arg1,arg2,database,source):
+    if action==sqlite3.SQLITE_SELECT and source is None:
+        return sqlite3.SQLITE_OK
+    if action==sqlite3.SQLITE_READ and database=='main' and source is None and arg2 in QUALITY_COLUMNS.get(arg1,()):
+        return sqlite3.SQLITE_OK
+    return sqlite3.SQLITE_DENY
+
+
+def quality_read_index(path):
+    # Fixed SQL only; authorizer limits columns, not row predicates.
+    # The literal allowlist of month parameters provides the logical boundary.
+    db=sqlite3.connect(path.as_uri()+'?mode=ro&immutable=1',uri=True,timeout=1)
+    try:
+        db.execute('PRAGMA query_only=ON')
+        db.execute('PRAGMA trusted_schema=OFF')
+        ordinary={r[1] for r in db.execute('PRAGMA main.table_list') if r[0]=='main' and r[2]=='table'}
+        if not set(QUALITY_COLUMNS)<=ordinary:
+            raise ValueError('QUALITY_SCHEMA')
+        for table,needed in QUALITY_COLUMNS.items():
+            cols={r[1] for r in db.execute('PRAGMA main.table_xinfo("'+table+'")') if r[6]==0}
+            if not set(needed)<=cols:
+                raise ValueError('QUALITY_SCHEMA')
+        db.set_authorizer(quality_authorizer)
+        identities=db.execute('SELECT ticker,member,member_bytes,member_crc32 FROM main.symbols LIMIT 100001').fetchall()
+        sql=('SELECT ticker,month,observed_regular_minutes,scheduled_minutes_in_observed_span '
+             'FROM main.monthly_coverage WHERE month COLLATE BINARY IN ('+
+             ','.join('?' for _ in QUALITY_MONTHS)+') LIMIT 100001')
+        monthly=db.execute(sql,QUALITY_MONTHS).fetchall()
+        if len(identities)>QUALITY_ROW_LIMIT or len(monthly)>QUALITY_ROW_LIMIT:
+            raise ValueError('QUALITY_ROW_LIMIT')
+    finally:
+        db.close()
+    return identities,monthly
+
+
+def quality_catalog_rows(parent):
+    digest,rows=load_market_candidates(parent)
+    with (parent/'market_zip_catalog.local.json').open('rb') as f:
+        raw=f.read(CATALOG_MAX_RECEIPT+1)
+    if len(raw)>CATALOG_MAX_RECEIPT or hashlib.sha256(raw).hexdigest()!=digest:
+        raise ValueError('QUALITY_CATALOG_CHANGED')
+    catalog=json.loads(raw)
+    crcs={}
+    for idx,a in enumerate(catalog['archives']):
+        for entry in a['parquet_candidates']:
+            crc=entry.get('crc32')
+            if type(crc) is not int or not 0<=crc<=0xffffffff:
+                raise ValueError('QUALITY_CRC')
+            crcs[(idx,entry['member'])]=crc
+    return digest,[{**row,'crc32':crcs[(row['archive_index'],row['member'])]} for row in rows]
+
+
+def quality_select(rows,identities,monthly,count,seed,min_months,min_bps):
+    if type(min_months) is not int or not 1<=min_months<=len(QUALITY_MONTHS) or type(min_bps) is not int or not 0<=min_bps<=10000:
+        raise ValueError('QUALITY_POLICY')
+    candidates,ambiguous,unknown=candidate_filename_symbols(rows)
+    lookup={(r['archive_index'],r['member']):r for r in rows}
+    identity_by={}
+    for ticker,member,size,crc in identities:
+        if type(ticker) is not str or ticker not in candidates:
+            continue
+        identity_by.setdefault(ticker,[]).append((member,size,crc))
+    verified={}
+    for ticker,candidate in candidates.items():
+        matches=identity_by.get(ticker,[])
+        if len(matches)!=1:
+            continue
+        member,size,crc=matches[0]
+        row=lookup[(candidate['archive_index'],candidate['member'])]
+        # CRC representation is explicitly hexadecimal, not guessed decimal.
+        if (member==row['member'] and type(size) is int and size==row['size'] and
+                type(crc) is str and re.fullmatch(r'(?:0[xX])?[0-9A-Fa-f]{8}',crc) and
+                int(crc,16)==row['crc32']):
+            verified[ticker]=row
+    month_rows={}
+    invalid=set()
+    for ticker,month,observed,scheduled in monthly:
+        if month not in QUALITY_MONTHS:
+            raise ValueError('QUALITY_PERIOD_REFUSED')
+        if ticker not in verified:
+            continue
+        key=(ticker,month)
+        if (key in month_rows or type(observed) is not int or type(scheduled) is not int or
+                not 0<=observed<=scheduled<=100000 or scheduled==0):
+            invalid.add(ticker)
+            continue
+        month_rows[key]=(observed,scheduled)
+    totals={}
+    for (ticker,month),(observed,scheduled) in month_rows.items():
+        x=totals.setdefault(ticker,[0,0,0])
+        x[0]+=1
+        x[1]+=observed
+        x[2]+=scheduled
+    eligible=[]
+    for ticker,row in verified.items():
+        months,observed,scheduled=totals.get(ticker,[0,0,0])
+        if ticker not in invalid and months>=min_months and scheduled and observed*10000>=min_bps*scheduled:
+            eligible.append({**row,'ticker':ticker,'months':months,'observed':observed,'scheduled':scheduled})
+    selected=[]
+    plan=None
+    if eligible:
+        selected,plan=auto_market_batch(eligible,'seeded',count,seed,0)
+    elif type(count) is not int or not 1<=count<=SELECTION_MAX or type(seed) is not int or not 0<=seed<2**64:
+        raise ValueError('QUALITY_POLICY')
+    return {'candidate_count':len(candidates),'ambiguous_count':ambiguous,'unrecognized_count':unknown,
+            'metadata_matched_count':len(verified),'invalid_monthly_count':len(invalid),
+            'eligible_count':len(eligible),'selected':selected,'selection_plan':plan}
+
+
+def quality_index_run(parent,count,seed,min_months,min_bps):
+    parent=local_folder(str(parent))
+    with (parent/'existing_index_column_map.local.json').open('rb') as f:
+        raw=f.read(INDEX_MAP_LIMIT+1)
+    if len(raw)>INDEX_MAP_LIMIT:
+        raise ValueError('QUALITY_MAP_LIMIT')
+    mapping=json.loads(raw)
+    if (mapping.get('schema')!=1 or mapping.get('scope')!='LOCAL_COLUMN_MAP_ONLY' or
+            mapping.get('research_access')!='LOCKED' or mapping.get('application_table_queries')!=0):
+        raise ValueError('QUALITY_MAP_INVALID')
+    path,before=index_file_metadata(mapping['index_source'])
+    digest,rows=quality_catalog_rows(parent)
+    if before[2]!=mapping['index_size'] or before[3]!=mapping['index_mtime_ns'] or digest!=mapping['catalog_sha256']:
+        raise ValueError('QUALITY_STALE')
+    identities,monthly=quality_read_index(path)
+    result=quality_select(rows,identities,monthly,count,seed,min_months,min_bps)
+    if index_file_metadata(str(path))[1]!=before or load_market_candidates(parent)[0]!=digest:
+        raise ValueError('QUALITY_STALE')
+    receipt={'schema':1,'scope':'LOCAL_RETROSPECTIVE_MONTHLY_SELECTION',
+             'catalog_sha256':digest,'index_map_sha256':hashlib.sha256(raw).hexdigest(),
+             'month_start':QUALITY_MONTHS[0],'month_end':QUALITY_MONTHS[-1],
+             'min_months':min_months,'min_coverage_bps':min_bps,'requested_count':count,'seed':seed,
+             'market_member_reads':0,'holdout_evaluation':'NOT_PERFORMED',
+             'physical_period_isolation':'UNVERIFIED','research_access':'LOCKED',**result}
+    payload=json.dumps(receipt,ensure_ascii=False,sort_keys=True).encode('utf-8')
+    if len(payload)>QUALITY_RECEIPT_LIMIT:
+        raise ValueError('QUALITY_RECEIPT_LIMIT')
+    dest=parent/'market_monthly_quality_selection.local.json'
+    atomic(dest,payload)
+    with dest.open('rb') as f:
+        if f.read(QUALITY_RECEIPT_LIMIT+1)!=payload:
+            raise ValueError('QUALITY_RECEIPT_MISMATCH')
+    return receipt
+
+
 class DataDesktop(UpdateDesktop):
     def __init__(self, *args, **kwargs):
         self.folder_dialog = None
@@ -1501,6 +1653,38 @@ class DataDesktop(UpdateDesktop):
                 output.set('\n'.join(lines) or '保存場所未指定')
             except (OSError, ValueError) as exc:
                 output.set('確認できません：' + registration_error(exc))
+        def monthly_quality_selection():
+            win=tk.Toplevel(dialog)
+            win.title('月別索引による研究候補選択（ローカル）')
+            win.transient(dialog)
+            pane=ttk.Frame(win,padding=12)
+            pane.pack(fill='both',expand=True)
+            ttk.Label(pane,text='2022年3月～2025年12月の月別索引を論理的に限定して参照します。市場ZIP本体は未読。混在SQLiteの物理分離とデータ由来の独立性は未証明です。',wraplength=480).pack(anchor='w')
+            n=tk.StringVar(value='32')
+            seed=tk.StringVar(value='20251127')
+            months=tk.StringVar(value='12')
+            bps=tk.StringVar(value='9000')
+            for label,var in [('抽出上限（1～128）',n),('乱数シード',seed),('最少観測月数（1～46）',months),('最少収録率（9000=90%）',bps)]:
+                ttk.Label(pane,text=label).pack(anchor='w')
+                ttk.Entry(pane,textvariable=var).pack(fill='x')
+            status=tk.StringVar(value='条件を固定して候補を選択します。研究実行はロック中。')
+            ttk.Label(pane,textvariable=status,wraplength=480).pack(anchor='w',pady=8)
+            def run():
+                if not messagebox.askyesno('月別索引参照','既存索引の識別用列と2025年以前の月別集計だけを参照し、候補をPC内に保存します。実行しますか？',parent=win):
+                    return
+                try:
+                    result=quality_index_run(Path(self.path).parent,int(n.get()),int(seed.get()),int(months.get()),int(bps.get()))
+                    status.set(f"名前候補：{result['candidate_count']}件\n名前・サイズ・CRC一致：{result['metadata_matched_count']}件\n品質条件適合：{result['eligible_count']}件 / 選択：{len(result['selected'])}件\n研究利用ロック中（本体未読）")
+                    self.log('月別索引の限定参照・研究候補選択保存成功。本体未読・研究利用ロック中。')
+                except (OSError,ValueError,sqlite3.Error,TypeError,KeyError,AttributeError,RecursionError):
+                    status.set('選択停止。索引・目録・列構造・入力条件を確認してください。実データ本体は未読。')
+            def close():
+                win.destroy()
+                dialog.grab_set()
+            ttk.Button(pane,text='限定参照・自動選択',command=run).pack(side='left')
+            ttk.Button(pane,text='閉じる',command=close).pack(side='right')
+            win.protocol('WM_DELETE_WINDOW',close)
+            win.grab_set()
         def inspect_index_columns():
             if not messagebox.askyesno('既存索引・列構造','保存済み索引の列名とZIP目録上の銘柄名候補を確認します。データ行・市場ZIP本体は読みません。',parent=dialog):
                 return
@@ -1563,6 +1747,7 @@ class DataDesktop(UpdateDesktop):
         ttk.Button(bar, text='登録状態を確認', command=inspect).pack(side='left')
         ttk.Button(bar, text='既存索引確認', command=inspect_existing_index).pack(side='left',padx=5)
         ttk.Button(bar, text='列構造確認', command=inspect_index_columns).pack(side='left',padx=5)
+        ttk.Button(bar, text='月別品質選択', command=monthly_quality_selection).pack(side='left',padx=5)
         ttk.Button(bar, text='保存', command=save).pack(side='right')
         ttk.Button(bar, text='キャンセル', command=close).pack(side='right', padx=5)
         dialog.protocol('WM_DELETE_WINDOW', close)
