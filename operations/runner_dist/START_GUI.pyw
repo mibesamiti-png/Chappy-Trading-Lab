@@ -310,7 +310,9 @@ def select(archive, name):
         with z.open(entry) as stream:
             raw = stream.read(512 * 1024 + 1)
         assert len(raw) == entry.file_size
-    table = pq.read_table(io.BytesIO(raw))
+    # Avoid dataset scanner background threads in this bounded worker.
+    with pq.ParquetFile(io.BytesIO(raw), pre_buffer=False) as parquet:
+        table = parquet.read(use_threads=False)
     assert table.schema.names == ['date', 'value']
     assert table.schema.field('date').type == pa.date32()
     assert table.schema.field('value').type == pa.int64()
