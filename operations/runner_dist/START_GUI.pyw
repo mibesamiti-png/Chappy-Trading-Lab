@@ -2638,6 +2638,140 @@ def batch_adapter_text(report):
             '実データ値・銘柄・行数の出力なし')
 
 
+# Operational control plane. This is not the shared scientific RunGuard.
+# No market member read, no task execution, no remote lease mutation.
+CONTROL_DB='runner_control_plane.local.sqlite'
+CONTROL_LAUNCH=os.urandom(16).hex()
+CONTROL_QUEUE_URL='https://raw.githubusercontent.com/mibesamiti-png/Chappy-Trading-Lab/refs/heads/main/TASK_QUEUE.json'
+CONTROL_LEASE_URL='https://raw.githubusercontent.com/mibesamiti-png/Chappy-Trading-Lab/refs/heads/coordination/lease/coordination/lease.json'
+CONTROL_IDS=tuple('CTL-%03d'%i for i in range(1,7))
+
+
+def control_remote_read(url,opener=None):
+    if url not in (CONTROL_QUEUE_URL,CONTROL_LEASE_URL):
+        raise ValueError('CONTROL_ENDPOINT')
+    if opener is None:
+        opener=urllib.request.urlopen
+    requested=url+'?ctl_check='+str(time.time_ns())
+    req=urllib.request.Request(requested,headers={'User-Agent':'Chappy-Trading-Lab-Control-ReadOnly','Cache-Control':'no-cache, no-store'})
+    with opener(req,timeout=8) as response:
+        if response.status!=200 or response.geturl()!=requested:
+            raise ValueError('CONTROL_RESPONSE')
+        raw=response.read(65537)
+    if len(raw)>65536:
+        raise ValueError('CONTROL_LIMIT')
+    return json.loads(raw)
+
+
+def control_queue_summary(q,lease):
+    if (type(q) is not dict or q.get('schema_version')!=1 or type(q.get('revision')) is not int or
+            type(q.get('holdout')) is not dict or q['holdout'].get('year')!=2026 or q['holdout'].get('status')!='locked'):
+        raise ValueError('CONTROL_QUEUE')
+    tasks=q.get('tasks')
+    if type(tasks) is not list or not 1<=len(tasks)<=64:
+        raise ValueError('CONTROL_QUEUE')
+    by={}
+    for item in tasks:
+        if (type(item) is not dict or item.get('id') not in CONTROL_IDS or item['id'] in by or
+                type(item.get('priority')) is not int or item['priority']<=0 or
+                item.get('status') not in ('blocked','completed','approval_required','ready','pending')):
+            raise ValueError('CONTROL_QUEUE')
+        deps=item.get('depends_on',[])
+        if type(deps) is not list or len(deps)>6 or any(type(x) is not str or x not in CONTROL_IDS or x==item['id'] for x in deps) or len(set(deps))!=len(deps):
+            raise ValueError('CONTROL_QUEUE')
+        by[item['id']]=item
+    if set(by)!=set(CONTROL_IDS) or by['CTL-006']['status']!='approval_required':
+        raise ValueError('CONTROL_QUEUE')
+    if any(by[x]['status']!='completed' for x in CONTROL_IDS[1:5]) or by['CTL-005'].get('decision')!='no_go_for_new_predictive_models_on_this_branch':
+        raise ValueError('CONTROL_SCOPE_CHANGED')
+    for item in tasks:
+        if item['status']=='completed' and any(by[d]['status']!='completed' for d in item.get('depends_on',[])):
+            raise ValueError('CONTROL_DEPENDENCY')
+    ready=[item for item in tasks if item['status']=='ready' and all(by[d]['status']=='completed' for d in item.get('depends_on',[]))]
+    ready.sort(key=lambda item:(item['priority'],item['id']))
+    if type(lease) is not dict or lease.get('schema_version')!=1:
+        raise ValueError('CONTROL_LEASE')
+    if lease.get('status')=='idle' and lease.get('owner') is None and lease.get('task_ids')==[] and lease.get('expires_utc') is None:
+        remote='OBSERVED_IDLE_NOT_ACQUIRED'
+    elif lease.get('status')=='active' and type(lease.get('owner')) is str and bool(lease['owner']) and type(lease.get('task_ids')) is list and bool(lease['task_ids']) and type(lease.get('expires_utc')) is str:
+        remote='OBSERVED_ACTIVE_STOP'
+    else:
+        raise ValueError('CONTROL_LEASE')
+    return {'revision':q['revision'],'completed':4,'next_task':ready[0]['id'] if ready else ('CTL-001' if by['CTL-001']['status']=='blocked' else 'NONE'),
+            'task_status':by['CTL-001']['status'],'remote':remote,'research_access':'LOCKED'}
+
+
+def control_evidence(parent):
+    # Existing receipt validation, not a reread of market members.
+    gate=source_gate_receipt(parent)
+    evidence={'catalog_sha256':gate['catalog_sha256'],'selection_sha256':gate['selection_sha256'],
+              'calendar_sha256':gate['calendar_sha256'],'index_map_sha256':gate['index_map_sha256']}
+    for name,validator in ((BATCH_ADAPTER_REPORT,batch_adapter_result),(SESSION_CONNECTION_REPORT,session_connection_result)):
+        with (parent/name).open('rb') as f:
+            raw=f.read(4097)
+        if validator(raw)['status']!='PASS':
+            raise ValueError('CONTROL_PREREQUISITE')
+        evidence[name]=hashlib.sha256(raw).hexdigest()
+    return hashlib.sha256(json.dumps(evidence,sort_keys=True).encode('utf-8')).hexdigest()
+
+
+def control_checkpoint(parent,launch,evidence,queue_summary):
+    # Local engineering ledger only. Transactions serialize this ledger,
+    # not other research writers. No implicit recovery of a research lease.
+    parent=local_folder(str(parent))
+    if not re.fullmatch(r'[0-9a-f]{32}',launch) or not re.fullmatch(r'[0-9a-f]{64}',evidence):
+        raise ValueError('CONTROL_ID')
+    fingerprint=hashlib.sha256(json.dumps({'evidence':evidence,'revision':queue_summary['revision'],
+                                           'task_status':queue_summary['task_status']},sort_keys=True).encode('utf-8')).hexdigest()
+    path=parent/CONTROL_DB
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ValueError('CONTROL_PATH')
+    db=sqlite3.connect(path,timeout=1,isolation_level=None)
+    try:
+        db.execute('PRAGMA trusted_schema=OFF')
+        db.execute('BEGIN IMMEDIATE')
+        db.execute('CREATE TABLE IF NOT EXISTS continuity (id INTEGER PRIMARY KEY CHECK(id=1), fingerprint TEXT NOT NULL, first_launch TEXT NOT NULL, second_launch TEXT, CHECK(second_launch IS NULL OR second_launch<>first_launch))')
+        row=db.execute('SELECT fingerprint,first_launch,second_launch FROM continuity WHERE id=1').fetchone()
+        if row is None:
+            db.execute('INSERT INTO continuity VALUES(1,?,?,NULL)',(fingerprint,launch))
+            state='RESTART_REQUIRED'
+        elif row[0]!=fingerprint:
+            state='EVIDENCE_CHANGED_STOP'
+        elif row[2] is not None:
+            state='REOPENED'
+        elif row[1]==launch:
+            state='RESTART_REQUIRED'
+        else:
+            db.execute('UPDATE continuity SET second_launch=? WHERE id=1',(launch,))
+            state='REOPENED'
+        db.commit()
+    finally:
+        db.close()
+    return state
+
+
+def control_plane_run(parent,launch=CONTROL_LAUNCH):
+    q=control_remote_read(CONTROL_QUEUE_URL)
+    lease=control_remote_read(CONTROL_LEASE_URL)
+    summary=control_queue_summary(q,lease)
+    if summary['remote']!='OBSERVED_IDLE_NOT_ACQUIRED':
+        return {**summary,'continuity':'REMOTE_ACTIVE_STOP'}
+    evidence=control_evidence(parent)
+    return {**summary,'continuity':control_checkpoint(parent,launch,evidence,summary)}
+
+
+def control_plane_text(summary):
+    states={'RESTART_REQUIRED':'保存完了・アプリ再起動後に再確認','REOPENED':'別起動IDで保存状態再読込成功',
+            'EVIDENCE_CHANGED_STOP':'証拠または研究キュー変更・停止','REMOTE_ACTIVE_STOP':'共有実行権が使用中・停止'}
+    return ('研究実行管理（準備・読取専用）\n'
+            '完了済み研究：CTL-002〜005（GitHub記録） / 再実行なし\n'
+            '次の候補：'+summary['next_task']+' / CTL-001状態：'+summary['task_status']+'\n'
+            '共有実行権：'+('空き応答を確認・未取得' if summary['remote']=='OBSERVED_IDLE_NOT_ACQUIRED' else '使用中応答・停止')+'\n'
+            'ローカル継続性：'+states[summary['continuity']]+'\n'
+            '研究実行ロック中 / 新規研究・市場本体読取・2026年評価なし\n'
+            '実際の別AIセッション・共通研究DB・共有実行権取得は未検証')
+
+
 # A fixed, local acceptance suite once per installed release.
 DIAG_FILE='runner_diagnostics.local.json'
 DIAG_LIMIT=16384
@@ -2810,6 +2944,8 @@ def install_runner_controls(owner):
     report_row.pack(fill='x',pady=(4,0))
     owner.batch_adapter_btn=ttk.Button(report_row,text='実データ集計接続',command=owner.run_batch_adapter_probe)
     owner.batch_adapter_btn.pack(side='left',padx=2)
+    owner.control_plane_btn=ttk.Button(report_row,text='研究実行管理',command=owner.run_control_plane)
+    owner.control_plane_btn.pack(side='left',padx=2)
     owner.diag_btn=ttk.Button(report_row,text='デバッグ報告',command=owner.open_diagnostics)
     owner.diag_btn.pack(side='right',padx=2)
     owner.runner_footer=footer
@@ -2899,6 +3035,35 @@ class DataDesktop(UpdateDesktop):
                 self.log('接続検査報告をクリップボードにコピーしました。')
             except tk.TclError:
                 self.log('接続検査報告のコピーに失敗しました。')
+        threading.Thread(target=run,daemon=False).start()
+        self.root.after(150,poll)
+
+    def run_control_plane(self):
+        if self.closing or self.parquet_busy or self.catalog_busy or self.folder_dialog is not None:
+            return
+        self.parquet_busy=True
+        self.control_plane_btn.configure(state='disabled')
+        results=queue.Queue()
+        parent=Path(self.path).parent
+        def run():
+            try:
+                results.put(control_plane_text(control_plane_run(parent)))
+            except Exception:
+                results.put('研究実行管理：停止（GitHub応答・保存済み証拠・ローカル状態の確認が必要）。研究実行ロック中。')
+        def poll():
+            try:
+                result=results.get_nowait()
+            except queue.Empty:
+                self.root.after(150,poll)
+                return
+            self.parquet_busy=False
+            self.control_plane_btn.configure(state='normal')
+            self.log(result)
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(result)
+            except tk.TclError:
+                self.log('研究実行管理報告のコピーに失敗しました。')
         threading.Thread(target=run,daemon=False).start()
         self.root.after(150,poll)
 
