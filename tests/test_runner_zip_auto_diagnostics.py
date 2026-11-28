@@ -29,14 +29,14 @@ class DiagnosticsTests(unittest.TestCase):
             self.calls.append('check')
         self.injections=dict(synthetic_probe_checkpoint=ok,parquet_runtime=ok,synthetic_ohlcv_checkpoint=ok,
                              synthetic_aggregation=ok,synthetic_run_read=lambda _:dict(status='COMPLETE'),
-                             load_market_candidates=ok,synthetic_horizon_checkpoint=ok,synthetic_session_mapping_checkpoint=ok)
+                             load_market_candidates=ok,synthetic_horizon_checkpoint=ok,synthetic_session_mapping_checkpoint=ok,synthetic_calendar_probe=ok,calendar_index_checkpoint=ok)
         self.patch=patch.dict(scope,self.injections)
         self.patch.start()
         self.addCleanup(self.patch.stop)
 
     def test_missing_optional_and_version(self):
         r=scope['diagnostic_run'](self.root,'0.8.7')
-        self.assertEqual([x['status'] for x in r['steps']],['PASS','SKIP_NOT_CONFIGURED','SKIP_NOT_CONFIGURED','PASS','SKIP_NOT_CONFIGURED','SKIP_NOT_CONFIGURED','PASS','PASS','SKIP_NOT_CONFIGURED'])
+        self.assertEqual([x['status'] for x in r['steps']],['PASS','SKIP_NOT_CONFIGURED','SKIP_NOT_CONFIGURED','PASS','SKIP_NOT_CONFIGURED','SKIP_NOT_CONFIGURED','PASS','PASS','PASS','SKIP_NOT_CONFIGURED','SKIP_NOT_CONFIGURED'])
         self.assertEqual(scope['diagnostic_read'](self.root,'0.8.7'),r)
         self.assertIsNone(scope['diagnostic_read'](self.root,'0.8.8'))
 
