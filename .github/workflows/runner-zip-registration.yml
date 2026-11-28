@@ -8,6 +8,8 @@ on:
       - 'operations/runner_dist/START_GUI.pyw'
       - 'tests/test_runner_zip_registration.py'
       - '.github/workflows/runner-zip-registration.yml'
+      - 'operations/runner_release.json'
+      - 'operations/runner_dist/app_version.py'
 permissions:
   contents: read
 jobs:
@@ -29,3 +31,5 @@ jobs:
         run: |
           python -m py_compile operations/runner_dist/START_GUI.pyw
           python -m unittest discover -s tests -p test_runner_zip_registration.py -v
+      - name: Verify release manifest for changed files
+        run: python tests/verify_runner_zip_manifest.py
