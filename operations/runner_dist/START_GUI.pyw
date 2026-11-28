@@ -16,6 +16,8 @@ import subprocess
 import threading
 import queue
 import time
+import urllib.request
+import urllib.error
 from app_version import VERSION
 from tkinter import messagebox
 from pathlib import Path
@@ -25,29 +27,147 @@ from desktop import Desktop, ledger_path
 from vault import atomic
 
 
+UPDATE_INTERVAL_MS=120000
+UPDATE_MANIFEST_URL='https://raw.githubusercontent.com/mibesamiti-png/Chappy-Trading-Lab/refs/heads/chat/runner-source-releases-20261128/operations/runner_release.json'
+UPDATE_MANIFEST_LIMIT=16384
+UPDATE_FILE_NAMES=frozenset(('START_GUI.pyw','api_bridge.py','app_version.py','desktop.py','synthetic_mailbox.py','vault.py'))
+
+
+def update_version_tuple(value):
+    if type(value) is not str or not re.fullmatch(r'(?:0|[1-9][0-9]{0,5})\.(?:0|[1-9][0-9]{0,5})\.(?:0|[1-9][0-9]{0,5})',value):
+        raise ValueError('UPDATE_VERSION_INVALID')
+    return tuple(map(int,value.split('.')))
+
+
+def update_manifest_version(raw):
+    if len(raw)>UPDATE_MANIFEST_LIMIT:
+        raise ValueError('UPDATE_MANIFEST_LIMIT')
+    data=json.loads(raw)
+    if (type(data) is not dict or data.get('schema')!=1 or data.get('scope')!='SYNTHETIC_ONLY' or
+            type(data.get('min_launcher')) is not int or data['min_launcher']<1 or
+            type(data.get('files')) is not dict or set(data['files'])!=UPDATE_FILE_NAMES or
+            any(type(v) is not str or not re.fullmatch(r'[0-9a-f]{64}',v) for v in data['files'].values())):
+        raise ValueError('UPDATE_MANIFEST_INVALID')
+    update_version_tuple(data.get('version'))
+    return data['version']
+
+
+def update_probe(local_version,opener=None):
+    start=time.monotonic()
+    status=None
+    remote=None
+    code='FAILED_INTERNAL'
+    try:
+        local=update_version_tuple(local_version)
+        url=UPDATE_MANIFEST_URL+'?ctl_check='+str(time.time_ns())
+        request=urllib.request.Request(url,headers={'User-Agent':'Chappy-Trading-Lab-Update-Probe',
+                                                     'Cache-Control':'no-cache, no-store',
+                                                     'Pragma':'no-cache'})
+        if opener is None:
+            opener=urllib.request.urlopen
+        with opener(request,timeout=8) as response:
+            status=response.status
+            if status!=200 or response.geturl()!=url:
+                raise ValueError('UPDATE_RESPONSE_INVALID')
+            remote=update_manifest_version(response.read(UPDATE_MANIFEST_LIMIT+1))
+        actual=update_version_tuple(remote)
+        code='NEWER' if actual>local else 'SAME' if actual==local else 'REMOTE_OLDER'
+    except urllib.error.HTTPError as exc:
+        status=exc.code
+        code='FAILED_HTTP'
+    except (urllib.error.URLError,TimeoutError,OSError):
+        code='FAILED_CONNECTION'
+    except (ValueError,TypeError,KeyError,RecursionError):
+        code='FAILED_MANIFEST'
+    except Exception:
+        code='FAILED_INTERNAL'
+    return {'code':code,'http':status,'local':local_version,'remote':remote,
+            'ms':max(0,int((time.monotonic()-start)*1000))}
+
+
+def update_probe_text(result):
+    http='未取得' if result['http'] is None else str(result['http'])
+    remote=result['remote'] or '未確認'
+    labels={'NEWER':'新版の応答あり（署名検証・適用は起動側）',
+            'SAME':'配信応答の版は同一（署名・配信先端は未検証）',
+            'REMOTE_OLDER':'配信応答が古い・最新状態未確認',
+            'FAILED_HTTP':'HTTPエラー・最新状態未確認',
+            'FAILED_CONNECTION':'通信失敗・最新状態未確認',
+            'FAILED_MANIFEST':'応答検証失敗・最新状態未確認',
+            'FAILED_INTERNAL':'確認失敗・最新状態未確認'}
+    return f"更新通信：HTTP {http} / 現在 {result['local']} / 応答 {remote} / {result['ms']/1000:.2f}秒 / {labels[result['code']]}"
+
+
 class UpdateDesktop(Desktop):
     def __init__(self, *args, **kwargs):
+        self.update_probe_busy=False
+        self.update_probe_results=queue.Queue()
+        self.last_update_probe=None
         super().__init__(*args, **kwargs)
-        self.check_now_btn = ttk.Button(self.link_btn.master, text='今すぐ更新確認', command=self.check_now)
-        self.check_now_btn.pack(side='right', padx=3)
-        if self.session is None or not (self.session / 'manual-check-supported').is_file():
-            self.log('手動更新確認には新しい起動プログラムが必要です。')
+        self.check_now_btn=ttk.Button(self.link_btn.master,text='今すぐ更新確認',command=self.check_now)
+        self.check_now_btn.pack(side='right',padx=3)
+        if self.session is None or not (self.session/'manual-check-supported').is_file():
+            self.log('更新の適用要求には対応した起動プログラムが必要です。')
+        self.root.after(1000,self.periodic_update_probe)
+
+    def periodic_update_probe(self):
+        if self.closing:
+            return
+        if self.auto_update.get():
+            self.begin_update_probe(False)
+        self.root.after(UPDATE_INTERVAL_MS,self.periodic_update_probe)
 
     def check_now(self):
         if self.closing:
             return
-        if self.session is None or not (self.session / 'manual-check-supported').is_file():
-            self.log('起動プログラムを更新してください。')
-            return
         if not self.auto_update.get():
             self.log('自動更新をONにしてから更新確認を押してください。')
             return
-        try:
-            atomic(self.session / 'check-now', b'1')
-        except OSError:
-            self.log('更新確認を要求できません。')
+        self.begin_update_probe(True)
+
+    def begin_update_probe(self,manual):
+        if self.update_probe_busy:
+            if manual:
+                self.log('更新通信は既に実行中です。')
             return
-        self.log('今すぐ更新確認を要求しました。処理中の場合、適用は完了後です。')
+        self.update_probe_busy=True
+        self.check_now_btn.configure(state='disabled')
+        self.log(('手動' if manual else '定期')+'更新確認：GitHubへ通信開始。')
+        def run():
+            self.update_probe_results.put(update_probe(VERSION))
+        threading.Thread(target=run,daemon=True).start()
+        self.root.after(100,self.poll_update_probe)
+
+    def poll_update_probe(self):
+        if self.closing:
+            return
+        try:
+            result=self.update_probe_results.get_nowait()
+        except queue.Empty:
+            self.root.after(100,self.poll_update_probe)
+            return
+        self.update_probe_busy=False
+        self.last_update_probe=result
+        self.check_now_btn.configure(state='normal')
+        self.log(update_probe_text(result))
+        if result['code']!='NEWER':
+            return
+        if not self.auto_update.get():
+            self.log('自動更新がOFFのため適用要求は送信しません。')
+            return
+        if self.session is None or not (self.session/'manual-check-supported').is_file():
+            self.log('新版を検出しましたが、起動プログラムが適用要求に未対応です。')
+            return
+        try:
+            pending=self.session/'check-now'
+            if pending.exists():
+                self.log('新版の更新要求は既に送信済みです。')
+                return
+            atomic(pending,b'1')
+        except OSError:
+            self.log('新版の更新要求を送信できません。')
+            return
+        self.log('新版の更新要求を送信しました。署名検証・取得・適用は起動プログラムが担当します。')
 
 
 # Local metadata only. Never import a market reader or publish these settings.
@@ -1454,7 +1574,8 @@ class DataDesktop(UpdateDesktop):
 
     def copy_diagnostics(self,report):
         self.root.clipboard_clear()
-        self.root.clipboard_append(diagnostic_text(report))
+        status=update_probe_text(self.last_update_probe) if self.last_update_probe is not None else '更新通信：今回の起動では未確認'
+        self.root.clipboard_append(diagnostic_text(report)+'\n'+status)
 
     def poll_diagnostics(self):
         while True:
