@@ -858,6 +858,94 @@ def synthetic_ohlcv_checkpoint(parent):
     return receipt
 
 
+SYNTH_RUN_FILE = 'synthetic_research_run.local.json'
+SYNTH_RUN_TASKS = ('zip_access', 'ohlcv_audit', 'aggregation')
+SYNTH_RUN_PROTOCOL = 'synthetic-research-execution-v1'
+SYNTH_RUN_LIMIT = 16384
+
+
+def synthetic_aggregation():
+    # Fixed invented observations: two independent sessions, no imputation.
+    sessions = ((1,2,3,4,5,6), (7,8,9,10))
+    totals = []
+    dropped = 0
+    for session in sessions:
+        for start in range(0,len(session),3):
+            window = session[start:start+3]
+            if len(window) != 3:
+                dropped += len(window)
+                continue
+            totals.append(sum(window))
+    if totals != [6,15,24] or dropped != 1:
+        raise ValueError('SYNTH_AGGREGATION_FAILED')
+    return {'window':3,'windows':len(totals),'sum':sum(totals),'discarded_incomplete':dropped}
+
+
+def synthetic_run_expected():
+    return {'zip_access':{'rows':3,'sum':10,'period_gate':'PASS'},
+            'ohlcv_audit':{'duplicates':1,'out_of_order':1,'gap_minutes':3,'off_minute':1,'null_rows':1,'invalid_ohlcv':1,'period_gate':'PASS'},
+            'aggregation':{'window':3,'windows':3,'sum':45,'discarded_incomplete':1}}
+
+
+def synthetic_run_read(parent):
+    parent=local_folder(str(parent))
+    dest=parent / SYNTH_RUN_FILE
+    if not dest.exists():
+        return {'schema':1,'protocol':SYNTH_RUN_PROTOCOL,'scope':'SYNTHETIC_ONLY',
+                'market_member_reads':0,'results':{},'status':'READY'}
+    with dest.open('rb') as f:
+        raw=f.read(SYNTH_RUN_LIMIT+1)
+    if len(raw)>SYNTH_RUN_LIMIT:
+        raise ValueError('SYNTH_RUN_LIMIT')
+    state=json.loads(raw)
+    if (type(state) is not dict or state.get('schema')!=1 or state.get('protocol')!=SYNTH_RUN_PROTOCOL or
+            state.get('scope')!='SYNTHETIC_ONLY' or state.get('market_member_reads')!=0 or type(state.get('results')) is not dict):
+        raise ValueError('SYNTH_RUN_INVALID')
+    results=state['results']
+    expected=synthetic_run_expected()
+    if set(results)!=set(SYNTH_RUN_TASKS[:len(results)]) or any(results[k]!=expected[k] for k in results):
+        raise ValueError('SYNTH_RUN_INVALID')
+    if state.get('status')!=('COMPLETE' if len(results)==len(SYNTH_RUN_TASKS) else 'READY'):
+        raise ValueError('SYNTH_RUN_INVALID')
+    return state
+
+
+def synthetic_run_write(parent,state):
+    raw=json.dumps(state,sort_keys=True).encode('utf-8')
+    if len(raw)>SYNTH_RUN_LIMIT:
+        raise ValueError('SYNTH_RUN_LIMIT')
+    dest=parent / SYNTH_RUN_FILE
+    atomic(dest,raw)
+    with dest.open('rb') as f:
+        if f.read(SYNTH_RUN_LIMIT+1)!=raw:
+            raise ValueError('SYNTH_RUN_SAVE_FAILED')
+
+
+def synthetic_run_execute(parent, notify=lambda *_: None):
+    parent=local_folder(str(parent))
+    state=synthetic_run_read(parent)
+    expected=synthetic_run_expected()
+    for name in SYNTH_RUN_TASKS:
+        if name in state['results']:
+            continue
+        if name=='zip_access':
+            receipt=synthetic_probe_checkpoint(parent / 'synthetic_zip_probe.local.json')
+            result={k:receipt[k] for k in ('rows','sum','period_gate')}
+        elif name=='ohlcv_audit':
+            receipt=synthetic_ohlcv_checkpoint(parent)
+            result={**receipt['audit'],'period_gate':receipt['period_gate']}
+        else:
+            result=synthetic_aggregation()
+        if result!=expected[name]:
+            raise ValueError('SYNTH_RUN_RESULT_MISMATCH')
+        state['results'][name]=result
+        state['status']='COMPLETE' if len(state['results'])==len(SYNTH_RUN_TASKS) else 'READY'
+        synthetic_run_write(parent,state)
+        state=synthetic_run_read(parent)
+        notify(len(state['results']),len(SYNTH_RUN_TASKS))
+    return state
+
+
 class DataDesktop(UpdateDesktop):
     def __init__(self, *args, **kwargs):
         self.folder_dialog = None
@@ -878,6 +966,8 @@ class DataDesktop(UpdateDesktop):
         self.catalog_btn.pack(side='left', padx=3)
         self.selection_btn = ttk.Button(self.link_btn.master, text='銘柄候補', command=self.open_market_selection)
         self.selection_btn.pack(side='left', padx=3)
+        self.synthetic_run_btn = ttk.Button(self.link_btn.master, text='人工研究実行', command=self.run_synthetic_research)
+        self.synthetic_run_btn.pack(side='left', padx=3)
 
     def open_market_selection(self):
         if self.closing or self.catalog_busy or self.parquet_busy or self.folder_dialog is not None:
@@ -1004,6 +1094,25 @@ class DataDesktop(UpdateDesktop):
         show(p)
         dialog.grab_set()
 
+    def run_synthetic_research(self):
+        if self.closing or self.parquet_busy or self.catalog_busy or self.folder_dialog is not None:
+            return
+        if not messagebox.askyesno('人工研究実行','固定の人工研究3工程を実行・再開します。完了工程は再実行しません。市場ZIPと2026封印データにはアクセスしません。',parent=self.root):
+            return
+        self.parquet_busy=True
+        self.synthetic_run_btn.configure(state='disabled')
+        parent=Path(self.path).parent
+        self.log('人工研究の実行・再開を開始しました。')
+        def run():
+            try:
+                state=synthetic_run_execute(parent)
+                result=f"人工研究実行成功：{len(state['results'])}/3工程完了・結果保存・再開確認。"
+            except Exception:
+                result='人工研究実行停止。保存済み工程は維持。Parquet専用環境とチェックポイントを確認してください。'
+            self.parquet_results.put(result)
+        threading.Thread(target=run,daemon=False).start()
+        self.root.after(250,self.poll_parquet)
+
     def run_ohlcv_probe(self):
         if self.closing or self.parquet_busy or self.catalog_busy or self.folder_dialog is not None:
             return
@@ -1088,6 +1197,7 @@ class DataDesktop(UpdateDesktop):
         self.parquet_busy = False
         self.parquet_btn.configure(state='normal')
         self.ohlcv_btn.configure(state='normal')
+        self.synthetic_run_btn.configure(state='normal')
         self.log(result + ' 登録市場ZIPは未読。')
 
     def run_research_probe(self):
