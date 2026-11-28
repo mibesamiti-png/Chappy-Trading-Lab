@@ -10,7 +10,7 @@ import unittest
 
 SOURCE = Path(__file__).resolve().parents[1] / 'operations/runner_dist/START_GUI.pyw'
 NAMES = {'ROLES', 'FORMATS', 'LIMIT', 'ZIP_LIMIT', 'SETTINGS_LIMIT'}
-FUNCTIONS = {'local_folder', 'local_zip', 'zip_paths', 'inventory', 'read_folders'}
+FUNCTIONS = {'local_folder', 'local_zip', 'zip_paths', 'inventory', 'read_folders', 'drive_allowed', 'registration_error'}
 tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
 nodes = [n for n in tree.body if
          isinstance(n, ast.FunctionDef) and n.name in FUNCTIONS or
@@ -40,6 +40,18 @@ class RegistrationTests(unittest.TestCase):
                   str(self.root / '2026_holdout.zip')):
             with self.subTest(p=p), self.assertRaises((ValueError, OSError)):
                 scope['local_zip'](p)
+
+    def test_drive_policy(self):
+        for kind in range(7):
+            self.assertEqual(scope['drive_allowed'](kind), kind == 3)
+            self.assertEqual(scope['drive_allowed'](kind, True), kind in (2, 3))
+
+    def test_diagnostics_do_not_expose_path(self):
+        for exc in (FileNotFoundError('private-path'), PermissionError('private-path'),
+                    OSError('private-path'), ValueError('private-path')):
+            self.assertNotIn('private-path', scope['registration_error'](exc))
+        self.assertNotEqual(scope['registration_error'](ValueError('LOCAL_DRIVE_REQUIRED')),
+                            scope['registration_error'](ValueError('HOLDOUT_ZIP_REFUSED')))
 
     def test_missing_file(self):
         with self.assertRaises(OSError):
