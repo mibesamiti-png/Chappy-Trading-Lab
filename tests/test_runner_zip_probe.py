@@ -51,9 +51,15 @@ class ProbeTests(unittest.TestCase):
             scope['probe_read_member'](a, 'missing.csv')
 
     def test_path_rejections(self):
-        for name in ('../x', '/x', 'a/../x', 'C:/x', 'a\\x', 'a//b'):
+        for name in ('../x', '/x', 'a/../x', 'C:/x', 'a//b'):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 scope['probe_zip_catalog'](archive([(name, b'x')]))
+        # Windows ZipInfo normalizes backslashes when writing. Patch the two
+        # filename fields in a stored fixture to exercise raw hostile metadata.
+        raw = archive([('a/x', b'x')])
+        self.assertEqual(raw.count(b'a/x'), 2)
+        with self.assertRaises(ValueError):
+            scope['probe_zip_catalog'](raw.replace(b'a/x', b'a\\x'))
 
     def test_duplicate(self):
         with warnings.catch_warnings():
