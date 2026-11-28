@@ -9,7 +9,9 @@ import zipfile
 import struct
 import sqlite3
 import csv
-from datetime import date
+from datetime import date, datetime, timezone, timedelta
+import base64
+import shutil
 import hashlib
 import importlib.util
 import subprocess
@@ -20,7 +22,7 @@ import math
 import urllib.request
 import urllib.error
 from app_version import VERSION
-from tkinter import messagebox
+from tkinter import messagebox, simpledialog
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog
@@ -2772,6 +2774,208 @@ def control_plane_text(summary):
             '実際の別AIセッション・共通研究DB・共有実行権取得は未検証')
 
 
+# CTL-001 operational pilot only, no scientific computation.
+DUAL_PR=41
+DUAL_HEAD='649c92eb2cb89dc3c0396c714f6bfd46cc9f7a1f'
+DUAL_BASE='/repos/mibesamiti-png/Chappy-Trading-Lab'
+DUAL_LEASE=DUAL_BASE+'/contents/coordination/lease.json'
+DUAL_LEASE_GET=DUAL_LEASE+'?ref=coordination%2Flease'
+DUAL_QUEUE=DUAL_BASE+'/contents/TASK_QUEUE.json?ref=main'
+DUAL_JOURNAL='dual_guard_pilot.local.json'
+DUAL_STATUS_TEXT='CTL-001 operational pilot: local guard acquired; prior checkpoint preserved; no market reads or research. Release follows. This is not CTL-001 completion.'
+
+
+class DualNoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self,*args,**kwargs):
+        return None
+
+
+def dual_api(endpoint,method='GET',body=None,token=None,gh=None):
+    allowed={('GET',x) for x in (DUAL_QUEUE,DUAL_LEASE_GET,DUAL_BASE+'/pulls/41',DUAL_BASE+'/pulls?state=open&per_page=100')}
+    allowed|={('PUT',DUAL_LEASE),('POST',DUAL_BASE+'/issues/41/comments')}
+    if (method,endpoint) not in allowed:
+        raise ValueError('DUAL_ENDPOINT')
+    data=json.dumps(body,separators=(',',':')).encode('utf-8') if body is not None else None
+    if gh is not None:
+        args=[gh,'api','--hostname','github.com','--method',method,endpoint,'--header','Accept: application/vnd.github+json',
+              '--header','X-GitHub-Api-Version: 2022-11-28','--header','Cache-Control: no-cache']
+        if data is not None:
+            args+=['--input','-']
+        p=subprocess.run(args,input=data or b'',stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=15,check=True,
+                         creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        raw=p.stdout
+    else:
+        if type(token) is not str or not re.fullmatch(r'[A-Za-z0-9_]{20,255}',token):
+            raise ValueError('DUAL_AUTH')
+        req=urllib.request.Request('https://api.github.com'+endpoint,data=data,method=method,
+                                   headers={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json',
+                                            'X-GitHub-Api-Version':'2022-11-28','User-Agent':'Chappy-Trading-Lab',
+                                            'Cache-Control':'no-cache, no-store','Content-Type':'application/json'})
+        with urllib.request.build_opener(DualNoRedirect()).open(req,timeout=15) as response:
+            if response.geturl()!=req.full_url:
+                raise ValueError('DUAL_REDIRECT')
+            raw=response.read(1048577)
+    if len(raw)>1048576:
+        raise ValueError('DUAL_RESPONSE_LIMIT')
+    return json.loads(raw)
+
+
+def dual_contents(obj):
+    if type(obj) is not dict or obj.get('type')!='file' or obj.get('encoding')!='base64' or not re.fullmatch(r'[0-9a-f]{40}',obj.get('sha','')):
+        raise ValueError('DUAL_CONTENTS')
+    raw=base64.b64decode(''.join(obj['content'].split()),validate=True)
+    if len(raw)>65536:
+        raise ValueError('DUAL_CONTENTS')
+    return obj['sha'],json.loads(raw)
+
+
+def dual_local_guard(path,owner,deadline,action):
+    path=Path(path)
+    if path.name.lower()!='run_guard.sqlite' or path.is_symlink() or not path.is_file():
+        raise ValueError('DUAL_DB_PATH')
+    local_folder(str(path.parent))
+    db=sqlite3.connect(path.resolve().as_uri()+'?mode=rw',uri=True,timeout=2,isolation_level=None)
+    try:
+        db.execute('PRAGMA trusted_schema=OFF')
+        for table,columns in [('guard',['id','owner','status','deadline','checkpoint']),('completed',['task','revision','owner','finished'])]:
+            if db.execute('SELECT type FROM sqlite_master WHERE name=?',(table,)).fetchone()!=('table',) or [r[1] for r in db.execute('PRAGMA table_info('+table+')')]!=columns:
+                raise ValueError('DUAL_DB_SCHEMA')
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' AND tbl_name IN ('guard','completed')").fetchone():
+            raise ValueError('DUAL_DB_TRIGGER')
+        db.execute('BEGIN IMMEDIATE')
+        row=db.execute('SELECT owner,status,deadline FROM guard WHERE id=1').fetchone()
+        if action in ('idle','acquire'):
+            if row is not None and row[1]!='released':
+                raise ValueError('DUAL_LOCAL_BUSY')
+            if action=='acquire':
+                if row is None:
+                    db.execute("INSERT INTO guard VALUES(1,?,'active',?,?)",(owner,deadline,'{}'))
+                else:
+                    # Preserve prior scientific checkpoint and completed table.
+                    db.execute("UPDATE guard SET owner=?,status='active',deadline=? WHERE id=1",(owner,deadline))
+        elif action=='live':
+            if row!=(owner,'active',deadline) or datetime.fromisoformat(deadline)<=datetime.now(timezone.utc):
+                raise ValueError('DUAL_LOCAL_LOST')
+        elif action=='release':
+            if row!=(owner,'active',deadline):
+                raise ValueError('DUAL_LOCAL_LOST')
+            db.execute("UPDATE guard SET status='released' WHERE id=1")
+        elif action=='not_owned':
+            if row is not None and row[:2]==(owner,'active'):
+                raise ValueError('DUAL_LOCAL_ACTIVE')
+        else:
+            raise ValueError('DUAL_ACTION')
+        db.commit()
+    finally:
+        db.close()
+
+
+def dual_remote_lease(api):
+    return dual_contents(api(DUAL_LEASE_GET))
+
+
+def dual_remote_write(api,sha,obj):
+    data=base64.b64encode(json.dumps(obj,sort_keys=True,indent=2).encode('utf-8')+b'\n').decode('ascii')
+    result=api(DUAL_LEASE,'PUT',{'message':'CTL-001 bounded operational lease pilot','branch':'coordination/lease','sha':sha,'content':data})
+    if type(result) is not dict or not re.fullmatch(r'[0-9a-f]{40}',result.get('content',{}).get('sha','')):
+        raise ValueError('DUAL_WRITE_RESPONSE')
+
+
+def dual_owned(obj,owner,deadline):
+    return (obj.get('schema_version')==1 and obj.get('status')=='active' and obj.get('owner')==owner and
+            obj.get('claim_pr')==DUAL_PR and obj.get('task_ids')==['CTL-001'] and obj.get('expires_utc')==deadline)
+
+
+def dual_run(parent,db_path,api,notify=lambda *_:None):
+    parent=local_folder(str(parent))
+    dest=parent/DUAL_JOURNAL
+    if dest.exists():
+        with dest.open('rb') as f:
+            raw=f.read(4097)
+        prior=json.loads(raw)
+        if len(raw)>4096 or prior.get('status')!='PASS' or prior.get('phase')!='RELEASED':
+            raise ValueError('DUAL_RECONCILE_REQUIRED')
+        return 'PASS'
+    _,q=dual_contents(api(DUAL_QUEUE))
+    _,lease=dual_remote_lease(api)
+    summary=control_queue_summary(q,lease)
+    if summary['remote']!='OBSERVED_IDLE_NOT_ACQUIRED' or summary['task_status']!='blocked':
+        raise ValueError('DUAL_QUEUE_OR_BUSY')
+    pr=api(DUAL_BASE+'/pulls/41')
+    if (pr.get('state')!='open' or pr.get('draft') is not True or pr.get('head',{}).get('sha')!=DUAL_HEAD or
+            pr.get('base',{}).get('ref')!='main' or pr.get('head',{}).get('repo',{}).get('full_name')!='mibesamiti-png/Chappy-Trading-Lab'):
+        raise ValueError('DUAL_PR')
+    claims=api(DUAL_BASE+'/pulls?state=open&per_page=100')
+    if type(claims) is not list or len(claims)>=100 or any('CTL-001' in str(x.get('title','')).upper() and x.get('number') not in (4,5,6,7,41) for x in claims):
+        raise ValueError('DUAL_OTHER_CLAIM')
+    if control_checkpoint(parent,CONTROL_LAUNCH,control_evidence(parent),summary)!='REOPENED':
+        raise ValueError('DUAL_RESTART_REQUIRED')
+    owner='ctl-runner-pilot-'+os.urandom(16).hex()
+    deadline=(datetime.now(timezone.utc)+timedelta(minutes=10)).isoformat()
+    dual_local_guard(db_path,owner,deadline,'idle')
+    record={'schema':1,'owner':owner,'deadline':deadline,'phase':'PREPARED','status':'INCOMPLETE'}
+    with dest.open('xb') as f:
+        f.write(json.dumps(record,sort_keys=True).encode('utf-8'))
+        f.flush()
+        os.fsync(f.fileno())
+    def save(phase,status='INCOMPLETE'):
+        record.update(phase=phase,status=status)
+        atomic(dest,json.dumps(record,sort_keys=True).encode('utf-8'))
+        notify(phase)
+    remote=False
+    local=False
+    reported=False
+    try:
+        sha,lease=dual_remote_lease(api)
+        if control_queue_summary(q,lease)['remote']!='OBSERVED_IDLE_NOT_ACQUIRED':
+            raise ValueError('DUAL_REMOTE_BUSY')
+        claim=dict(lease)
+        claim.update(status='active',owner=owner,claim_pr=DUAL_PR,task_ids=['CTL-001'],expires_utc=deadline)
+        save('REMOTE_REQUEST')
+        dual_remote_write(api,sha,claim)
+        _,actual=dual_remote_lease(api)
+        if not dual_owned(actual,owner,deadline):
+            raise ValueError('DUAL_REMOTE_LOST')
+        remote=True
+        save('REMOTE_ACQUIRED')
+        dual_local_guard(db_path,owner,deadline,'acquire')
+        local=True
+        save('LOCAL_ACQUIRED')
+        _,actual=dual_remote_lease(api)
+        _,current_q=dual_contents(api(DUAL_QUEUE))
+        if not dual_owned(actual,owner,deadline) or current_q!=q or datetime.fromisoformat(deadline)<=datetime.now(timezone.utc):
+            raise ValueError('DUAL_REMOTE_LOST')
+        dual_local_guard(db_path,owner,deadline,'live')
+        save('CHECKPOINT_SAVED')
+        comment=api(DUAL_BASE+'/issues/41/comments','POST',{'body':DUAL_STATUS_TEXT})
+        if type(comment) is not dict or type(comment.get('id')) is not int:
+            raise ValueError('DUAL_REPORT')
+        reported=True
+    finally:
+        # Ambiguous mutations stop; never release another owner's guard.
+        if local:
+            dual_local_guard(db_path,owner,deadline,'release')
+            save('LOCAL_RELEASED')
+        if remote:
+            dual_local_guard(db_path,owner,deadline,'not_owned')
+            sha,actual=dual_remote_lease(api)
+            if not dual_owned(actual,owner,deadline):
+                raise ValueError('DUAL_REMOTE_LOST')
+            idle=dict(actual)
+            idle.update(status='idle',owner=None,task_ids=[],expires_utc=None,last_owner=owner,
+                        last_claim_pr=DUAL_PR,last_result_commit=DUAL_HEAD,released_utc=datetime.now(timezone.utc).isoformat(),
+                        last_run_status='Operational dual-guard pilot; no research or holdout access')
+            idle.pop('claim_pr',None)
+            dual_remote_write(api,sha,idle)
+            _,verified=dual_remote_lease(api)
+            if control_queue_summary(q,verified)['remote']!='OBSERVED_IDLE_NOT_ACQUIRED' or verified.get('last_owner')!=owner:
+                raise ValueError('DUAL_RELEASE_UNVERIFIED')
+            save('RELEASED','PASS' if local and reported else 'INCOMPLETE')
+    if not (local and remote and reported):
+        raise ValueError('DUAL_INCOMPLETE')
+    return 'PASS'
+
+
 # A fixed, local acceptance suite once per installed release.
 DIAG_FILE='runner_diagnostics.local.json'
 DIAG_LIMIT=16384
@@ -2946,6 +3150,8 @@ def install_runner_controls(owner):
     owner.batch_adapter_btn.pack(side='left',padx=2)
     owner.control_plane_btn=ttk.Button(report_row,text='研究実行管理',command=owner.run_control_plane)
     owner.control_plane_btn.pack(side='left',padx=2)
+    owner.dual_guard_btn=ttk.Button(report_row,text='排他実行権テスト',command=owner.run_dual_guard)
+    owner.dual_guard_btn.pack(side='left',padx=2)
     owner.diag_btn=ttk.Button(report_row,text='デバッグ報告',command=owner.open_diagnostics)
     owner.diag_btn.pack(side='right',padx=2)
     owner.runner_footer=footer
@@ -3064,6 +3270,62 @@ class DataDesktop(UpdateDesktop):
                 self.root.clipboard_append(result)
             except tk.TclError:
                 self.log('研究実行管理報告のコピーに失敗しました。')
+        threading.Thread(target=run,daemon=False).start()
+        self.root.after(150,poll)
+
+    def run_dual_guard(self):
+        if self.closing or self.parquet_busy or self.catalog_busy or self.folder_dialog is not None:
+            return
+        parent=Path(self.path).parent
+        if (parent/DUAL_JOURNAL).exists():
+            try:
+                with (parent/DUAL_JOURNAL).open('rb') as f:
+                    raw=f.read(4097)
+                obj=json.loads(raw)
+                if len(raw)>4096 or obj.get('status')!='PASS' or obj.get('phase')!='RELEASED':
+                    raise ValueError('DUAL_RECONCILE_REQUIRED')
+                result='排他実行権テスト：保存済みPASS / ローカル・共有実行権解放確認済み / 研究実行ロック中'
+            except Exception:
+                result='排他実行権テスト：中断記録あり。自動再取得・解放しません。管理者による照合が必要。'
+            self.log(result)
+            self.root.clipboard_clear()
+            self.root.clipboard_append(result)
+            return
+        if not messagebox.askyesno('排他実行権テスト','既存の共通研究DB run_guard.sqlite とGitHub共有リースを使用し、取得・保存・解放の試験を1回行います。研究・市場データ読み取りは行いません。',parent=self.root):
+            return
+        selected=filedialog.askopenfilename(parent=self.root,title='既存の共通研究DBを選択',filetypes=[('共通研究DB','run_guard.sqlite')])
+        if not selected:
+            return
+        gh=shutil.which('gh')
+        token=None
+        if not gh:
+            token=simpledialog.askstring('GitHub認証','GitHub CLIが見つかりません。一時使用する既存GitHubトークンを入力（保存・ログ出力なし）。',show='*',parent=self.root)
+            if not token:
+                return
+        self.parquet_busy=True
+        self.dual_guard_btn.configure(state='disabled')
+        results=queue.Queue()
+        def run():
+            try:
+                api=lambda endpoint,method='GET',body=None:dual_api(endpoint,method,body,token=token,gh=gh)
+                dual_run(parent,selected,api,lambda phase:results.put(('progress',phase)))
+                results.put(('done','排他実行権テスト：PASS / 共有CAS・ローカル取得・保存・解放確認 / 研究実行ロック中 / 2026年評価なし'))
+            except Exception:
+                results.put(('done','排他実行権テスト：停止（認証・DB・共有実行権・中断記録を確認）。研究実行ロック中。'))
+        def poll():
+            try:
+                kind,result=results.get_nowait()
+            except queue.Empty:
+                self.root.after(150,poll)
+                return
+            self.log(result)
+            if kind=='progress':
+                self.root.after(150,poll)
+                return
+            self.parquet_busy=False
+            self.dual_guard_btn.configure(state='normal')
+            self.root.clipboard_clear()
+            self.root.clipboard_append(result)
         threading.Thread(target=run,daemon=False).start()
         self.root.after(150,poll)
 
