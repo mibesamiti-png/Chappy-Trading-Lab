@@ -14,3 +14,9 @@ existing actual PyArrow CI installation test for end-to-end execution twice.
 No real archive access, physical period isolation proof, scientific
 protocol, completed research rerun or predictive work. The input schema
 is synthetic, not proof of compatibility with actual market member data.
+
+Initial CI: Ubuntu passed, Windows child worker failed with exit 1; stderr
+was suppressed, so the exact exception is unknown. Reuse the previously
+validated int64 UTC conversion to avoid platform-dependent timestamp object
+conversion. Keep the same input and expected outputs, and require both CI
+platforms to pass before release.

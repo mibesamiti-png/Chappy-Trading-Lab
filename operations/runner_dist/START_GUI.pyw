@@ -1845,15 +1845,19 @@ def read(raw):
         table=p.read(use_threads=False)
     if table.schema.field('timestamp').type!=pa.timestamp('us',tz='UTC') or any(table.schema.field(k).type!=pa.int64() for k in ('open','high','low','close','volume')):
         raise ValueError('PIPELINE_SCHEMA')
+    # Same integer UTC conversion as the previously validated OHLCV worker.
+    # Avoid Arrow's platform-dependent timezone-object conversion.
+    ticks=table['timestamp'].cast(pa.int64()).to_pylist()
+    columns=[table[name].to_pylist() for name in ('open','high','low','close','volume')]
+    first=(datetime(2000,1,1,tzinfo=timezone.utc)-epoch).days*86400000000
+    limit=(datetime(2026,1,1,tzinfo=timezone.utc)-epoch).days*86400000000
     result=[]
-    for values in zip(*(table[name].to_pylist() for name in table.schema.names)):
-        ts,*prices=values
-        if ts is None or not 2000<=ts.year<=2025:
+    for tick,*prices in zip(ticks,*columns):
+        if type(tick) is not int or not first<=tick<limit:
             raise ValueError('PIPELINE_PERIOD')
-        if ts.second or ts.microsecond or any(type(v) is not int for v in prices):
+        if tick%60000000 or any(type(v) is not int for v in prices):
             raise ValueError('PIPELINE_ROW')
-        delta=ts-epoch
-        result.append([delta.days*1440+delta.seconds//60,*prices])
+        result.append([tick//60000000,*prices])
     return result
 rows=[]
 for start,length,price in [(datetime(2025,1,6,14,30,tzinfo=timezone.utc),60,100),
