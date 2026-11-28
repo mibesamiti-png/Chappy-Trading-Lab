@@ -628,7 +628,7 @@ def save_market_selection(parent, catalog_hash, selected):
 
 OHLCV_WORKER = r'''
 import io, json, zipfile, time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import pyarrow as pa
 import pyarrow.parquet as pq
 from collections import Counter
@@ -638,7 +638,12 @@ def audit(table):
     assert table.schema.field('timestamp').type == pa.timestamp('us', tz='UTC')
     assert all(table.schema.field(n).type == pa.int64() for n in ('open','high','low','close','volume'))
     assert 0 < table.num_rows <= 4096
-    rows = table.to_pylist()
+    # Convert UTC microseconds explicitly; avoid OS timezone database dependency.
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    ticks = table['timestamp'].cast(pa.int64()).to_pylist()
+    rows = table.drop(['timestamp']).to_pylist()
+    for row, tick in zip(rows, ticks):
+        row['timestamp'] = None if tick is None else epoch + timedelta(microseconds=tick)
     # Artificial data only: never inspect a real mixed-period member.
     if any(r['timestamp'] is None or r['timestamp'].year >= 2026 or r['timestamp'].year < 2000 for r in rows):
         raise ValueError('PERIOD_LOCKED')
