@@ -1937,6 +1937,81 @@ def synthetic_integrated_checkpoint(parent):
     return result
 
 
+# Admission evidence only. This version has no real market reader.
+SOURCE_GATE_RECEIPT='market_source_admission.local.json'
+
+
+def source_gate_receipt(parent):
+    parent=local_folder(str(parent))
+    def read_receipt(name,limit):
+        with (parent/name).open('rb') as f:
+            raw=f.read(limit+1)
+        if len(raw)>limit:
+            raise ValueError('SOURCE_GATE_LIMIT')
+        obj=json.loads(raw)
+        if type(obj) is not dict or obj.get('schema')!=1 or obj.get('research_access')!='LOCKED' or obj.get('market_member_reads')!=0:
+            raise ValueError('SOURCE_GATE_SCHEMA')
+        return obj,hashlib.sha256(raw).hexdigest()
+    mapping,map_hash=read_receipt('existing_index_column_map.local.json',INDEX_MAP_LIMIT)
+    selection,selection_hash=read_receipt('market_monthly_quality_selection.local.json',QUALITY_RECEIPT_LIMIT)
+    calendar,calendar_hash=read_receipt(CALENDAR_RECEIPT,131072)
+    digest,rows=quality_catalog_rows(parent)
+    if (mapping.get('scope')!='LOCAL_COLUMN_MAP_ONLY' or mapping.get('application_table_queries')!=0 or
+            mapping.get('catalog_sha256')!=digest or
+            selection.get('scope')!='LOCAL_RETROSPECTIVE_MONTHLY_SELECTION' or selection.get('catalog_sha256')!=digest or
+            selection.get('index_map_sha256')!=map_hash or selection.get('month_start')!=QUALITY_MONTHS[0] or
+            selection.get('month_end')!=QUALITY_MONTHS[-1] or
+            calendar.get('scope')!='LOCAL_CALENDAR_METADATA' or calendar.get('index_map_sha256')!=map_hash or
+            calendar.get('date_start')!=CALENDAR_FIRST or calendar.get('date_end')!=CALENDAR_LAST):
+        raise ValueError('SOURCE_GATE_STALE')
+    for receipt in (selection,calendar):
+        if receipt.get('holdout_evaluation')!='NOT_PERFORMED' or receipt.get('physical_period_isolation')!='UNVERIFIED':
+            raise ValueError('SOURCE_GATE_SCOPE')
+    path,before=index_file_metadata(mapping['index_source'])
+    if before[2]!=mapping['index_size'] or before[3]!=mapping['index_mtime_ns']:
+        raise ValueError('SOURCE_GATE_STALE')
+    lookup={(row['archive_index'],row['member']):(row['size'],row['crc32']) for row in rows}
+    selected=selection.get('selected')
+    if type(selected) is not list or len(selected)>128:
+        raise ValueError('SOURCE_GATE_SELECTION')
+    seen=set()
+    for row in selected:
+        key=(row['archive_index'],row['member'])
+        if (key in seen or type(row['archive_index']) is not int or type(row['size']) is not int or
+                type(row['crc32']) is not int or lookup.get(key)!=(row['size'],row['crc32'])):
+            raise ValueError('SOURCE_GATE_IDENTITY')
+        seen.add(key)
+    sessions=calendar.get('sessions')
+    if type(sessions) is not list or not 1<=len(sessions)<=CALENDAR_MAX:
+        raise ValueError('SOURCE_GATE_CALENDAR')
+    previous=''
+    for day,offset,duration in sessions:
+        session_day_base(day)
+        if (not CALENDAR_FIRST<=day<=CALENDAR_LAST or day<=previous or type(offset) is not int or
+                offset not in (-300,-240) or type(duration) is not int or not 1<=duration<=390):
+            raise ValueError('SOURCE_GATE_CALENDAR')
+        previous=day
+    if index_file_metadata(str(path))[1]!=before or load_market_candidates(parent)[0]!=digest:
+        raise ValueError('SOURCE_GATE_STALE')
+    # No filename, user-edited flag, checksum, quality threshold or prior
+    # logical-prefix study is treated as proof of physical period isolation.
+    # There is intentionally no allowed/execute branch.
+    report={'schema':1,'scope':'LOCAL_ADMISSION_METADATA_ONLY','protocol':'source-admission-v1',
+            'catalog_sha256':digest,'index_map_sha256':map_hash,'selection_sha256':selection_hash,
+            'calendar_sha256':calendar_hash,'candidate_count':len(selected),
+            'metadata_consistency':'PASS','physical_period_isolation':'UNVERIFIED',
+            'reader_schema':'UNVERIFIED','calendar_completeness':'UNVERIFIED',
+            'scientific_execution':'LOCKED','market_member_reads':0,'holdout_evaluation':'NOT_PERFORMED',
+            'research_access':'LOCKED','reason':'NO_PERIOD_ISOLATED_SOURCE_OR_APPROVED_READER'}
+    payload=json.dumps(report,sort_keys=True).encode('utf-8')
+    dest=parent/SOURCE_GATE_RECEIPT
+    atomic(dest,payload)
+    with dest.open('rb') as f:
+        if f.read(16385)!=payload:
+            raise ValueError('SOURCE_GATE_SAVE_FAILED')
+    return report
+
+
 # A fixed, local acceptance suite once per installed release.
 DIAG_FILE='runner_diagnostics.local.json'
 DIAG_LIMIT=16384
@@ -1950,6 +2025,7 @@ DIAG_STEPS=(('zip','人工ZIP・期間制限'),('parquet','既存Parquet環境')
             ('calendar_index','既存索引の2025年以前カレンダー'),
             ('statistics','人工記述統計・欠損境界検査'),
             ('pipeline','人工ZIP・Parquet・統計の統合検査'),
+            ('source_gate','市場接続ロック・候補整合性検査'),
             ('quality','保存済み月別選択の再現確認'))
 DIAG_CODES=('PASS','SKIP_NOT_CONFIGURED','FAIL_TIMEOUT','FAIL_IO','FAIL_VALIDATION','FAIL_REPRODUCIBILITY','FAIL_INTERNAL')
 
@@ -2024,6 +2100,7 @@ def diagnostic_run(parent,version,notify=lambda *_:None):
         'calendar_index':lambda:calendar_index_checkpoint(parent),
         'statistics':lambda:synthetic_statistics_checkpoint(parent),
         'pipeline':lambda:synthetic_integrated_checkpoint(parent),
+        'source_gate':lambda:source_gate_receipt(parent),
         'quality':lambda:diagnostic_quality(parent),
     }
     rows=[]
@@ -2039,11 +2116,13 @@ def diagnostic_run(parent,version,notify=lambda *_:None):
                 raise FileNotFoundError()
             if key=='calendar_index' and not (parent/'existing_index_column_map.local.json').is_file():
                 raise FileNotFoundError()
+            if key=='source_gate' and not all((parent/name).is_file() for name in ('existing_index_column_map.local.json','market_monthly_quality_selection.local.json',CALENDAR_RECEIPT)):
+                raise FileNotFoundError()
             if key=='quality' and not (parent/'market_monthly_quality_selection.local.json').is_file():
                 raise FileNotFoundError()
             actions[key]()
         except FileNotFoundError:
-            status='SKIP_NOT_CONFIGURED' if key in ('parquet','ohlcv','checkpoint','catalog','quality','calendar_index','pipeline') else 'FAIL_IO'
+            status='SKIP_NOT_CONFIGURED' if key in ('parquet','ohlcv','checkpoint','catalog','quality','calendar_index','pipeline','source_gate') else 'FAIL_IO'
         except subprocess.TimeoutExpired:
             status='FAIL_TIMEOUT'
         except (OSError,subprocess.CalledProcessError):
