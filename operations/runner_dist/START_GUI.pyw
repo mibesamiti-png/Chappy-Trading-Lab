@@ -2012,6 +2012,114 @@ def source_gate_receipt(parent):
     return report
 
 
+# Candidate logical group exclusion on generated Parquet only.
+# No file path input or real reader. Footer metadata and compressed bytes
+# are not physically isolated even if selected data groups are.
+PREFIX_WORKER=r'''
+import io,json
+from datetime import datetime
+import pyarrow as pa
+import pyarrow.parquet as pq
+if pa.__version__!='26.0.1':
+    raise ValueError('PREFIX_ARROW_VERSION')
+epoch=datetime(1970,1,1)
+first=(datetime(2022,3,7)-epoch).days*86400000000
+cutoff=(datetime(2026,1,1)-epoch).days*86400000000
+schema=pa.schema([('datetime',pa.timestamp('us')),('Open',pa.float64()),
+                  ('High',pa.float64()),('Low',pa.float64()),('Close',pa.float64()),
+                  ('Volume',pa.int64()),('source',pa.string())])
+def build(groups,stats=True):
+    out=io.BytesIO()
+    with pq.ParquetWriter(out,schema,write_statistics=stats) as writer:
+        for dates,price in groups:
+            values={'datetime':dates,'Open':[price]*len(dates),'High':[price]*len(dates),
+                    'Low':[price]*len(dates),'Close':[price]*len(dates),'Volume':[1]*len(dates),
+                    'source':['invented']*len(dates)}
+            writer.write_table(pa.Table.from_pydict(values,schema=schema))
+    return out.getvalue()
+def check(raw):
+    # Fixed invented fixture. All groups are classified before any projected
+    # data read. Reject unknown metadata instead of guessing.
+    with pq.ParquetFile(io.BytesIO(raw),pre_buffer=False) as p:
+        if p.schema_arrow!=schema or not 1<=p.num_row_groups<=32:
+            raise ValueError('PREFIX_SCHEMA')
+        selected=[]
+        excluded_boundary=0
+        excluded_reserved=0
+        prev=None
+        for i in range(p.num_row_groups):
+            group=p.metadata.row_group(i)
+            stats=group.column(0).statistics
+            if (not 1<=group.num_rows<=512 or stats is None or not stats.has_min_max or
+                    not stats.has_null_count or stats.null_count!=0 or
+                    type(stats.min_raw) is not int or type(stats.max_raw) is not int):
+                raise ValueError('PREFIX_METADATA')
+            lo,hi=stats.min_raw,stats.max_raw
+            if lo<first or lo>hi or (prev is not None and lo<=prev):
+                raise ValueError('PREFIX_ORDER')
+            prev=hi
+            if hi<cutoff:
+                selected.append((i,lo,hi,group.num_rows))
+            elif lo<cutoff:
+                excluded_boundary+=1
+            else:
+                excluded_reserved+=1
+        rows=[]
+        for i,lo,hi,n in selected:
+            # Validate date projection before reading any price column.
+            ticks=p.read_row_group(i,columns=['datetime'],use_threads=False)['datetime'].cast(pa.int64()).to_pylist()
+            if (len(ticks)!=n or any(type(t) is not int or not first<=t<cutoff or t%60000000 for t in ticks)
+                    or any(a>=b for a,b in zip(ticks,ticks[1:])) or ticks[0]!=lo or ticks[-1]!=hi):
+                raise ValueError('PREFIX_TIMESTAMP')
+            prices=p.read_row_group(i,columns=['Open','High','Low','Close','Volume'],use_threads=False)
+            if prices.num_rows!=n:
+                raise ValueError('PREFIX_ROW_COUNT')
+            rows.extend(zip(ticks,prices['Close'].to_pylist()))
+        return {'groups_read':[i for i,*_ in selected],'boundary_groups_excluded':excluded_boundary,
+                'reserved_groups_excluded':excluded_reserved,'retained_rows':len(rows),
+                'retained_close_sum':sum(c for _,c in rows)}
+groups=[([datetime(2025,12,30,9,30),datetime(2025,12,30,9,31)],100.0),
+        ([datetime(2025,12,31,9,30),datetime(2026,1,1,9,30)],999.0),
+        ([datetime(2026,1,2,9,30)],888.0)]
+report=check(build(groups))
+assert report=={'groups_read':[0],'boundary_groups_excluded':1,
+                'reserved_groups_excluded':1,'retained_rows':2,'retained_close_sum':200.0}
+for bad,stats,expected in [(groups,False,'PREFIX_METADATA'),
+                           ([groups[1],groups[0]],True,'PREFIX_ORDER'),
+                           ([([datetime(2025,12,30,9,30,1)],100.0)],True,'PREFIX_TIMESTAMP')]:
+    try:
+        check(build(bad,stats))
+    except ValueError as exc:
+        if str(exc)!=expected:
+            raise
+    else:
+        raise ValueError('PREFIX_REJECTION_FAILED')
+print(json.dumps({'scope':'SYNTHETIC_ONLY','report':report,'physical_isolation':'UNVERIFIED'},allow_nan=False))
+'''
+
+
+def synthetic_prefix_checkpoint(parent):
+    parent=local_folder(str(parent))
+    target=parent/'ctl_pyarrow_26_0_1'
+    local_folder(str(target))
+    marker=target/'ctl-owned.txt'
+    if marker.is_symlink() or not marker.is_file() or marker.stat().st_size!=len(b'CTL_PYARROW_26_0_1\n') or marker.read_bytes()!=b'CTL_PYARROW_26_0_1\n':
+        raise ValueError('PARQUET_UNOWNED_ENV')
+    python=target/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
+    if not python.is_file():
+        raise ValueError('PARQUET_NOT_INSTALLED')
+    raw=parquet_command(python,['-c',PREFIX_WORKER],parent,120,capture=True)
+    if len(raw)>4096:
+        raise ValueError('PREFIX_RECEIPT_LIMIT')
+    out=json.loads(raw)
+    expected={'scope':'SYNTHETIC_ONLY','report':{'groups_read':[0],
+              'boundary_groups_excluded':1,'reserved_groups_excluded':1,
+              'retained_rows':2,'retained_close_sum':200.0},'physical_isolation':'UNVERIFIED'}
+    if out!=expected:
+        raise ValueError('PREFIX_RECEIPT_INVALID')
+    return out
+
+
 # A fixed, local acceptance suite once per installed release.
 DIAG_FILE='runner_diagnostics.local.json'
 DIAG_LIMIT=16384
@@ -2026,6 +2134,7 @@ DIAG_STEPS=(('zip','人工ZIP・期間制限'),('parquet','既存Parquet環境')
             ('statistics','人工記述統計・欠損境界検査'),
             ('pipeline','人工ZIP・Parquet・統計の統合検査'),
             ('source_gate','市場接続ロック・候補整合性検査'),
+            ('prefix','人工Parquet行グループ・期間境界検査'),
             ('quality','保存済み月別選択の再現確認'))
 DIAG_CODES=('PASS','SKIP_NOT_CONFIGURED','FAIL_TIMEOUT','FAIL_IO','FAIL_VALIDATION','FAIL_REPRODUCIBILITY','FAIL_INTERNAL')
 
@@ -2101,6 +2210,7 @@ def diagnostic_run(parent,version,notify=lambda *_:None):
         'statistics':lambda:synthetic_statistics_checkpoint(parent),
         'pipeline':lambda:synthetic_integrated_checkpoint(parent),
         'source_gate':lambda:source_gate_receipt(parent),
+        'prefix':lambda:synthetic_prefix_checkpoint(parent),
         'quality':lambda:diagnostic_quality(parent),
     }
     rows=[]
@@ -2110,7 +2220,7 @@ def diagnostic_run(parent,version,notify=lambda *_:None):
         status='PASS'
         try:
             # Missing optional artifacts are not counted as success.
-            if key in ('parquet','ohlcv','pipeline') and not (parent/'ctl_pyarrow_26_0_1').is_dir():
+            if key in ('parquet','ohlcv','pipeline','prefix') and not (parent/'ctl_pyarrow_26_0_1').is_dir():
                 raise FileNotFoundError()
             if key=='catalog' and not (parent/'market_zip_catalog.local.json').is_file():
                 raise FileNotFoundError()
@@ -2122,7 +2232,7 @@ def diagnostic_run(parent,version,notify=lambda *_:None):
                 raise FileNotFoundError()
             actions[key]()
         except FileNotFoundError:
-            status='SKIP_NOT_CONFIGURED' if key in ('parquet','ohlcv','checkpoint','catalog','quality','calendar_index','pipeline','source_gate') else 'FAIL_IO'
+            status='SKIP_NOT_CONFIGURED' if key in ('parquet','ohlcv','checkpoint','catalog','quality','calendar_index','pipeline','source_gate','prefix') else 'FAIL_IO'
         except subprocess.TimeoutExpired:
             status='FAIL_TIMEOUT'
         except (OSError,subprocess.CalledProcessError):

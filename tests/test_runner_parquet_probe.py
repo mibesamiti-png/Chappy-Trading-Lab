@@ -17,12 +17,12 @@ SOURCE = Path(__file__).resolve().parents[1] / 'operations/runner_dist/START_GUI
 tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
 names = {'drive_allowed', 'local_folder', 'parquet_env', 'parquet_command', 'parquet_runtime', 'session_day_base', 'map_session_rows', 'aggregate_session_rows',
          'describe_session_horizon', 'integrated_pipeline_expected', 'integrated_pipeline_analyze',
-         'synthetic_integrated_checkpoint'}
+         'synthetic_integrated_checkpoint', 'synthetic_prefix_checkpoint'}
 nodes = [n for n in tree.body if
          isinstance(n, ast.FunctionDef) and n.name in names or
          isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in
                                          {'PARQUET_VERSION', 'PARQUET_WORKER', 'RESEARCH_HORIZONS', 'SESSION_EPOCH',
-                                          'SESSION_FIRST', 'SESSION_LIMIT', 'PIPELINE_RECEIPT', 'PIPELINE_WORKER'} for t in n.targets)]
+                                          'SESSION_FIRST', 'SESSION_LIMIT', 'PIPELINE_RECEIPT', 'PIPELINE_WORKER', 'PREFIX_WORKER'} for t in n.targets)]
 scope = dict(date=date, math=math, Path=Path, os=os, re=re, stat=stat, sys=sys, json=json,
              subprocess=subprocess, atomic=lambda p, b: p.write_bytes(b))
 exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), 'exec'), scope)
@@ -61,6 +61,9 @@ class ParquetTests(unittest.TestCase):
             self.assertEqual(integrated['results']['30']['mean_return'],None)
             self.assertEqual(integrated,scope['synthetic_integrated_checkpoint'](p))
             self.assertEqual(integrated,json.loads((p/'synthetic_integrated_pipeline.local.json').read_text()))
+            prefix=scope['synthetic_prefix_checkpoint'](p)
+            self.assertEqual(prefix['report']['groups_read'],[0])
+            self.assertEqual(prefix['physical_isolation'],'UNVERIFIED')
 
 
 if __name__ == '__main__':
